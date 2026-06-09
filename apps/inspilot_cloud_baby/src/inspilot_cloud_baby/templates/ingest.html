@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>资料投喂</h1>
+<form>
+  <label>资料归属</label>
+  <select name="scope">
+    <option value="unknown">不确定，让系统识别</option>
+    <option value="project">项目</option>
+    <option value="public">公共</option>
+    <option value="private">个人</option>
+  </select>
+  <label>备注</label>
+  <textarea name="note"></textarea>
+</form>
+{% endblock %}
