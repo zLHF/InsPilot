@@ -18,14 +18,15 @@ python -m uvicorn inspilot_cloud_baby.main:app --reload --host 127.0.0.1 --port 
 - `http://127.0.0.1:8000/admin/ingest`
 - `http://127.0.0.1:8000/admin/dws`
 
-## DWS PoC
+## 钉钉审批导入
 
-企业管理员授权后运行：
+审批导入通过钉钉开放平台企业管理 API（AppKey/AppSecret）直接拉取，无需任何外部 CLI。配置步骤见 `/admin/dws` 页面「企业内部应用模式」说明。
 
-```bash
-dws auth login
-dws schema oa --format json
-dws oa process-instance get --instance-id "PROC-EXAMPLE-001" --format json
+在 `.env` 中配置（参考 `.env.example`）：
+
+```
+BUSINESS_ROBOT_DINGTALK_APP_KEY=你的AppKey
+BUSINESS_ROBOT_DINGTALK_APP_SECRET=你的AppSecret
 ```
 
-实际 OA 命令必须以 `dws schema oa --format json` 返回结果为准。如果命令名或参数不同，更新 `inspilot_cloud_baby.dws_adapter.DwsAdapter` 和对应测试。
+授权后在 `/admin/dws` 输入审批实例 ID 或工单号（纯数字）即可预览/导入。所有审批数据通过 `dingtalk_admin.DingTalkAdminClient` 调用 `/topapi/processinstance/*` 接口获取。

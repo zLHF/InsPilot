@@ -2,13 +2,18 @@
 
 > **给执行 Agent 的要求：** 实施本计划时必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，逐任务执行并用 checkbox（`- [ ]`）跟踪进度。
 
-**目标：** 实现 InsPilot 云小宝的 Alpha 版本，跑通“文本对话 → 资料投喂 → 权限过滤检索 → 结构化输出 → DWS 钉钉流程导入 PoC”的主链路。
+**目标：** 实现 InsPilot 云小宝的 Alpha 版本，跑通“文本对话 → 资料投喂 → 权限过滤检索 → 结构化输出 → 钉钉审批流程导入 PoC”的主链路。
 
-**架构：** Alpha 阶段采用模块化单体，先避免微服务复杂度。后端使用 FastAPI，结构化数据使用 PostgreSQL，附件 Alpha 阶段先落本地文件系统，DWS 通过独立 adapter 封装。**知识检索现状（已落地）**：基于 pgvector + OpenAI `text-embedding-3-small` 的向量检索（余弦距离），失败或无结果时降级为关键词检索（降级链详见 `retrieval.py`）；向量列 `KnowledgeItem.embedding` 可空，入库时自动生成，历史数据通过 `scripts/migrate_embeddings.py` 回填。所有外部能力（DWS、对象存储、向量检索、钉钉提交）都通过接口隔离，方便 PoC 后替换成正式实现。
+**架构：** Alpha 阶段采用模块化单体，先避免微服务复杂度。后端使用 FastAPI，结构化数据使用 PostgreSQL，附件 Alpha 阶段先落本地文件系统。**知识检索现状（已落地）**：基于 pgvector + OpenAI `text-embedding-3-small` 的向量检索（余弦距离），失败或无结果时降级为关键词检索（降级链详见 `retrieval.py`）；向量列 `KnowledgeItem.embedding` 可空，入库时自动生成，历史数据通过 `scripts/migrate_embeddings.py` 回填。所有外部能力（钉钉审批 API、对象存储、向量检索）都通过接口隔离，方便 PoC 后替换成正式实现。
 
-> **实现备注（2026-06-16 更新）**：原计划「先关键词、后替换向量检索」已被提前完成 —— 向量检索 + 关键词降级链已在 Alpha 落地，并额外补齐了钉钉企业管理 API（`dingtalk_admin.py`，AppKey/AppSecret 模式）与管理后台 UI（`routers/admin.py` + `templates/`）。以下任务 checkbox 反映实际完成状态。
+> **实现备注（2026-06-16 更新）**：
+> 1. 原计划「先关键词、后替换向量检索」已被提前完成 —— 向量检索 + 关键词降级链已在 Alpha 落地。
+> 2. **DWS adapter 已移除**：审批导入改为直接调用钉钉开放平台 API（`dingtalk_admin.py`，AppKey/AppSecret → `/topapi/processinstance/*`），不再依赖任何外部 CLI 或 `dws` 二进制。`dws_adapter.py`、`routers/dws.py`、`dws_binary` 配置均已删除；`DwsWorkflow` 改名为 `WorkflowDoc` 迁入 `dingtalk_admin.py`。
+> 3. 管理后台 UI（`routers/admin.py` + `templates/`）已补齐。
+>
+> 以下任务 checkbox 反映实际完成状态；Task 6/9/10/11/12 中涉及 DWS adapter 的历史代码块为初始设计记录，实际实现以仓库代码为准。
 
-**技术栈：** Python 3.12、FastAPI、SQLAlchemy 2、Alembic、Pydantic v2、PostgreSQL 16、pytest、Ruff、Jinja2、HTMX、本地文件存储、DWS CLI。
+**技术栈：** Python 3.12、FastAPI、SQLAlchemy 2、Alembic、Pydantic v2、PostgreSQL 16、pytest、Ruff、Jinja2、HTMX、本地文件存储、钉钉开放平台 API。
 
 ---
 
@@ -24,8 +29,8 @@ Alpha 包含：
 - 知识敏感级别：`public_summary`、`project_restricted`、`sensitive`。
 - 按权限过滤的项目知识检索。
 - 三类结构化输出：`change_request`、`new_requirement`、`system_issue`。
-- DWS 按钉钉流程 ID / 工单号导入历史流程的 PoC。
-- 最小后台页面：项目、知识投喂、DWS 导入结果。
+- 钉钉审批流程按实例 ID / 工单号导入历史流程的 PoC。
+- 最小后台页面：项目、知识投喂、钉钉审批导入结果。
 
 Alpha 不包含：
 
@@ -108,7 +113,7 @@ apps/inspilot_cloud_baby/
 - `storage.py`：附件存储抽象，Alpha 先使用本地文件。
 - `retrieval.py`：向量检索（pgvector）+ 关键词降级 + 权限过滤。
 - `output_builder.py`：结构化输出 JSON 生成。
-- `dws_adapter.py`：封装 DWS CLI 调用和结果解析。
+- `dws_adapter.py`：（已移除）原 DWS CLI 封装，现由 `dingtalk_admin.py` 直接调用钉钉开放平台 API 替代。
 - `ingest/classifier.py`：上传资料的规则分类器。
 - `routers/*`：API 和后台页面路由。
 
@@ -1721,9 +1726,9 @@ git commit -m "docs: add alpha implementation runbook"
 - [x] 权限过滤能阻止普通公司用户查看项目敏感资料。
 - [x] 检索只返回当前用户可见的知识。
 - [x] 结构化输出支持 `change_request`、`new_requirement`、`system_issue`。
-- [x] DWS adapter 能构造流程导入命令并解析流程 JSON。
-- [ ] 企业授权后，已用一个真实钉钉流程实例验证 DWS 命令。（人工验证，待执行）
-- [x] 后台页面包含资料投喂和 DWS 导入入口。
+- [x] 钉钉企业管理 API 客户端能拉取审批流程详情并解析表单/评论/附件。
+- [ ] 企业授权后，已用一个真实钉钉流程实例验证审批导入命令。（人工验证，待执行）
+- [x] 后台页面包含资料投喂和钉钉审批导入入口。
 - [x] `python -m pytest -v` 全部通过。
 - [x] `python -m ruff check .` 通过。
 

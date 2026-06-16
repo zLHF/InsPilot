@@ -60,9 +60,9 @@ Connection: `postgresql+psycopg://inspilot_cloud_baby:inspilot_cloud_baby@localh
 
 ### Architecture
 
-Modular monolith. All external capabilities (DWS, object storage, vector search, DingTalk submission) isolated behind interfaces for post-PoC replacement.
+Modular monolith. All external capabilities (DingTalk approval API, object storage, vector search) isolated behind interfaces for post-PoC replacement.
 
-Key modules: `models.py` (SQLAlchemy), `schemas.py` (Pydantic DTOs), `permissions.py` (visibility logic), `ingest/classifier.py` (material classification), `retrieval.py` (vector search + keyword fallback), `embedding.py` (OpenAI embedding service), `output_builder.py` (structured JSON), `dws_adapter.py` (DingTalk workflow CLI), `dingtalk_admin.py` (DingTalk enterprise admin API client), `routers/` (API + admin pages).
+Key modules: `models.py` (SQLAlchemy), `schemas.py` (Pydantic DTOs), `permissions.py` (visibility logic), `ingest/classifier.py` (material classification), `retrieval.py` (vector search + keyword fallback), `embedding.py` (OpenAI embedding service), `output_builder.py` (structured JSON), `dingtalk_admin.py` (DingTalk enterprise admin API client — direct Open Platform API, no external CLI), `routers/` (API + admin pages).
 
 ### Vector Search (`embedding.py` + `retrieval.py`)
 
@@ -75,11 +75,15 @@ Key modules: `models.py` (SQLAlchemy), `schemas.py` (Pydantic DTOs), `permission
 
 ### DingTalk Admin API (`dingtalk_admin.py`)
 
-Enterprise-level API client using AppKey/AppSecret for org-wide access. Key capabilities:
-- **Process code discovery**: `list_process_templates()` via `/topapi/process/listbyuserid` — discovers all 157 org approval templates
+Direct client for the DingTalk Open Platform (`/topapi/processinstance/*`), using an enterprise internal app's AppKey/AppSecret for org-wide access. **No external CLI/binary is used** (the former `dws_adapter.py` that shelled out to a `dws` binary has been removed). Key capabilities:
+- **Process code discovery**: `list_process_templates()` via `/topapi/process/listbyuserid` — discovers all org approval templates
 - **Business ID resolution**: `resolve_business_id_fast()` — parses `YYYYMMDD` from business_id for date-aware 1-day window search across all process codes
 - **Detail fetch**: `get_detail()` — fetches instance detail + comments + structured attachments
 - **Batch fetch**: `batch_get_details()` — rate-limited (50ms) batch operation
+- **Connection check**: `test_connection()` — validates AppKey/AppSecret without raising
+- **Recent instances**: `list_recent_instances()` — approximate recent-instance list (DingTalk has no per-user pending-approval API)
+- **View model**: `to_workflow()` converts an `AdminWorkflowDetail` into a `WorkflowDoc` for the admin templates
+- **Config**: `BUSINESS_ROBOT_DINGTALK_APP_KEY`, `BUSINESS_ROBOT_DINGTALK_APP_SECRET`
 - **API limits** (empirically verified):
   - `listids` max time range width: **120 days**
   - `listids` max lookback: **365 days** (older dates return "时间戳无效")
@@ -92,7 +96,7 @@ HTMX-driven admin UI at `/admin/*`:
 - **Ingest** (`/admin/ingest`) — text-based knowledge import with auto-classification
 - **Knowledge** (`/admin/knowledge`) — CRUD + status workflow (待审核 → 已生效 → 已归档)
 - **Projects** (`/admin/projects`) — project management with visibility settings
-- **DWS Import** (`/admin/dws`) — single + batch DingTalk approval import with progress indicator
+- **DingTalk Approval Import** (`/admin/dws`) — single + batch DingTalk approval import (direct Open Platform API) with progress indicator
 - Templates in `templates/` with HTMX partials in `templates/partials/`
 
 ## Key Domain Concepts
