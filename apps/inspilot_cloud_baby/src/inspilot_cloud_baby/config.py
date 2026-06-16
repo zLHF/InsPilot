@@ -9,6 +9,19 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://inspilot_cloud_baby:inspilot_cloud_baby@localhost:5432/inspilot_cloud_baby"
     attachment_root: Path = Path("./var/attachments")
     dws_binary: str = "dws"
+    # Enterprise internal app credentials — enables admin-level API access
+    # (can query ALL approval instances, not just personal ones)
+    dws_client_id: str = ""      # DingTalk AppKey
+    dws_client_secret: str = ""  # DingTalk AppSecret
+
+    # OpenAI Embedding 配置
+    openai_api_key: str = ""  # BUSINESS_ROBOT_OPENAI_API_KEY
+    openai_embedding_model: str = "text-embedding-3-small"
+    openai_embedding_dimensions: int = 1536
+    openai_base_url: str = ""  # 可选，支持代理或兼容 API
+
+    # 向量检索开关
+    enable_vector_search: bool = True
 
 
 settings = Settings()

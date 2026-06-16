@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from pgvector.sqlalchemy import Vector
 
 from inspilot_cloud_baby.db import Base
 
@@ -71,4 +72,17 @@ class KnowledgeItem(Base):
     created_by: Mapped[str] = mapped_column(String(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    embedding = mapped_column(Vector(1536), nullable=True)
+
     project: Mapped[Project | None] = relationship(back_populates="knowledge_items")
+
+
+class AppSetting(Base):
+    """Key-value store for runtime-configurable application settings."""
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
