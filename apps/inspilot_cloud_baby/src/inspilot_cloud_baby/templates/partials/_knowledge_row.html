@@ -1,0 +1,72 @@
+<tr id="knowledge-row-{{ item.id }}">
+  <td>
+    <strong>{{ item.title }}</strong>
+    {% if item.body %}
+    <div class="text-muted text-sm mt-2" style="max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+      {{ item.body[:80] }}{% if item.body|length > 80 %}…{% endif %}
+    </div>
+    {% endif %}
+  </td>
+  <td>{{ project_name or '—' }}</td>
+  <td>
+    <span class="badge badge-blue">
+      {{ material_type_labels.get(item.source_type, item.source_type) }}
+    </span>
+  </td>
+  <td>
+    {% set sens = item.sensitivity.value if item.sensitivity.__class__.__name__ != 'str' else item.sensitivity %}
+    {% if sens == 'sensitive' %}
+      <span class="badge badge-red">{{ sensitivity_labels.get(item.sensitivity, item.sensitivity) }}</span>
+    {% elif sens == 'project_restricted' %}
+      <span class="badge badge-amber">{{ sensitivity_labels.get(item.sensitivity, item.sensitivity) }}</span>
+    {% else %}
+      <span class="badge badge-green">{{ sensitivity_labels.get(item.sensitivity, item.sensitivity) }}</span>
+    {% endif %}
+  </td>
+  <td>
+    {% set color = status_colors.get(item.status, 'gray') %}
+    <span class="badge badge-{{ color }}">{{ status_labels.get(item.status, item.status.value) }}</span>
+  </td>
+  <td>
+    <div class="text-sm">{{ item.created_at.strftime('%Y-%m-%d %H:%M') if item.created_at else '—' }}</div>
+    <div class="text-muted text-sm">{{ item.created_by }}</div>
+  </td>
+  <td>
+    <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+      {% if item.status.value == 'pending_review' %}
+      <button class="btn btn-success btn-xs"
+              hx-put="/admin/knowledge/{{ item.id }}/status"
+              hx-vals='{"status": "active"}'
+              hx-target="#knowledge-row-{{ item.id }}"
+              hx-swap="outerHTML">
+        ✅ 通过
+      </button>
+      {% endif %}
+      {% if item.status.value in ('pending_review', 'active', 'conflict') %}
+      <button class="btn btn-outline btn-xs"
+              hx-put="/admin/knowledge/{{ item.id }}/status"
+              hx-vals='{"status": "archived"}'
+              hx-target="#knowledge-row-{{ item.id }}"
+              hx-swap="outerHTML">
+        📦 归档
+      </button>
+      {% endif %}
+      {% if item.status.value == 'archived' %}
+      <button class="btn btn-outline btn-xs"
+              hx-put="/admin/knowledge/{{ item.id }}/status"
+              hx-vals='{"status": "active"}'
+              hx-target="#knowledge-row-{{ item.id }}"
+              hx-swap="outerHTML">
+        🔄 恢复
+      </button>
+      {% endif %}
+      <button class="btn btn-danger btn-xs"
+              hx-delete="/admin/knowledge/{{ item.id }}"
+              hx-target="#knowledge-row-{{ item.id }}"
+              hx-swap="outerHTML swap:0.5s"
+              hx-confirm="确定要删除这条知识吗？此操作不可恢复。">
+        🗑️ 删除
+      </button>
+    </div>
+  </td>
+</tr>

@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}项目管理 - InsPilot 云小宝 Alpha{% endblock %}
+{% block page_title %}项目管理{% endblock %}
+{% block page_desc %}管理项目及其可见范围，项目是知识条目的归属容器{% endblock %}
+
+{% block topbar_actions %}
+<button class="btn btn-primary" onclick="document.getElementById('new-project-form').style.display = 'block'">
+  ➕ 新建项目
+</button>
+{% endblock %}
+
+{% block content %}
+<div class="guide-box">
+  <h3>📖 项目管理说明</h3>
+  <ul>
+    <li><strong>项目</strong>是知识条目的归属容器，每条知识必须归属于某个项目或为公共资料</li>
+    <li><strong>公司可见</strong>：全公司用户可查看项目下的公开摘要级知识</li>
+    <li><strong>项目成员</strong>：仅项目成员可查看项目下的知识</li>
+    <li><strong>受限</strong>：需要明确授权才能访问</li>
+    <li>点击项目下的知识条目数量，可跳转到该项目下的知识管理列表</li>
+  </ul>
+</div>
+
+<div id="new-project-form" class="card" style="display: none;">
+  <div class="card-header">➕ 新建项目</div>
+  <form hx-post="/admin/projects/create"
+        hx-target="#project-table-body"
+        hx-swap="beforeend"
+        hx-indicator="#create-spinner"
+        onsubmit="this.parentElement.style.display='none'">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="name">项目名称 *</label>
+        <input type="text" name="name" required placeholder="例如：XX保险项目">
+      </div>
+      <div class="form-group">
+        <label for="visibility">可见范围</label>
+        <select name="visibility">
+          <option value="company_visible">公司可见</option>
+          <option value="project_members">项目成员</option>
+          <option value="restricted">受限</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="summary">项目简介</label>
+      <input type="text" name="summary" placeholder="简要描述项目内容">
+    </div>
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <button type="submit" class="btn btn-success">
+        <span class="htmx-hide-on-request">✅ 创建</span>
+        <span id="create-spinner" class="htmx-indicator">⏳ 创建中...</span>
+      </button>
+      <button type="button" class="btn btn-outline"
+              onclick="document.getElementById('new-project-form').style.display='none'">
+        取消
+      </button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  {% if projects %}
+  <table>
+    <thead>
+      <tr>
+        <th>项目名称</th>
+        <th>可见范围</th>
+        <th>简介</th>
+        <th>知识条目</th>
+        <th>创建时间</th>
+      </tr>
+    </thead>
+    <tbody id="project-table-body">
+      {% for project in projects %}
+      {% set item_count = counts.get(project.id, 0) %}
+      {% include "partials/_project_row.html" %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <div class="icon">🗂️</div>
+    <h3>暂无项目</h3>
+    <p class="text-muted">点击右上角「新建项目」创建第一个项目</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

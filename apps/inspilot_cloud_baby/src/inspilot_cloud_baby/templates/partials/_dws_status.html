@@ -1,0 +1,63 @@
+{% if has_admin and admin_ok %}
+<div class="success-card">
+  <div class="check">✅</div>
+  <h3>企业管理 API 已连接</h3>
+  <p>已配置企业内部应用凭证，可访问<strong>全部审批流程</strong></p>
+  <div style="margin-top: 12px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
+    <span class="badge badge-green">✓ 企业 AppKey 已配置</span>
+    <span class="badge badge-green">✓ access_token 有效</span>
+  </div>
+</div>
+{% elif has_admin and not admin_ok %}
+<div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px;">
+  <div style="display: flex; align-items: flex-start; gap: 12px;">
+    <span style="font-size: 24px;">⚠️</span>
+    <div>
+      <h4 style="font-size: 14px; font-weight: 600; color: #991b1b; margin-bottom: 6px;">企业 API 连接失败</h4>
+      <p style="font-size: 14px; color: #991b1b;">{{ admin_error }}</p>
+      <div style="margin-top: 10px; display: flex; gap: 8px;">
+        <span class="badge badge-red">✗ 企业 API 不可用</span>
+      </div>
+      <p class="text-sm" style="margin-top: 8px; color: #7f1d1d;">
+        请检查 AppKey/AppSecret 是否正确，以及是否已开通 <code>qyapi_aflow</code> 权限。
+      </p>
+    </div>
+  </div>
+</div>
+{% elif conn.success %}
+<div class="success-card">
+  <div class="check">✅</div>
+  <h3>DWS 连接正常（个人模式）</h3>
+  <p>DWS CLI 已安装且已完成认证，可导入你作为审批人/发起人的流程</p>
+  <div style="margin-top: 12px; display: flex; gap: 8px; justify-content: center;">
+    <span class="badge badge-green">✓ CLI 已安装</span>
+    <span class="badge badge-green">✓ 已认证登录</span>
+    <span class="badge badge-amber">仅个人模式</span>
+  </div>
+  <p class="text-sm text-muted" style="margin-top: 12px;">
+    💡 配置企业内部应用凭证可访问<strong>全部审批流程</strong>，见下方「企业内部应用模式」说明
+  </p>
+</div>
+{% else %}
+<div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px;">
+  <div style="display: flex; align-items: flex-start; gap: 12px;">
+    <span style="font-size: 24px;">❌</span>
+    <div>
+      <h4 style="font-size: 14px; font-weight: 600; color: #991b1b; margin-bottom: 6px;">DWS 连接失败</h4>
+      <p style="font-size: 14px; color: #991b1b;">{{ conn.error }}</p>
+      <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+        {% if not conn.binary_found %}
+        <span class="badge badge-red">✗ CLI 未安装</span>
+        {% else %}
+        <span class="badge badge-green">✓ CLI 已安装</span>
+        {% endif %}
+        {% if not conn.authenticated %}
+        <span class="badge badge-red">✗ 未认证</span>
+        {% else %}
+        <span class="badge badge-green">✓ 已认证</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}

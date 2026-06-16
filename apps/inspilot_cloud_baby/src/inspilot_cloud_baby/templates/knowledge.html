@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}知识管理 - InsPilot 云小宝 Alpha{% endblock %}
+{% block page_title %}知识管理{% endblock %}
+{% block page_desc %}查看和管理所有知识条目，审核待处理的资料{% endblock %}
+
+{% block content %}
+<div class="guide-box">
+  <h3>📖 知识管理说明</h3>
+  <ul>
+    <li>知识条目按 <strong>待审核 → 已生效 → 已归档</strong> 的流程管理</li>
+    <li>点击「✅ 通过」将待审核条目变为已生效，生效后的条目可被对话检索</li>
+    <li>使用筛选器按项目、状态、敏感级别过滤条目</li>
+    <li>敏感级别的条目含 PII 信息，仅授权用户可查看</li>
+  </ul>
+</div>
+
+<div class="card">
+  <form method="get" action="/admin/knowledge" class="toolbar">
+    <input type="search" name="q" value="{{ current_query }}"
+           placeholder="搜索标题…" style="min-width: 200px;">
+    <select name="status">
+      <option value="">全部状态</option>
+      <option value="pending_review" {{ 'selected' if current_status == 'pending_review' else '' }}>待审核</option>
+      <option value="active" {{ 'selected' if current_status == 'active' else '' }}>已生效</option>
+      <option value="draft" {{ 'selected' if current_status == 'draft' else '' }}>草稿</option>
+      <option value="archived" {{ 'selected' if current_status == 'archived' else '' }}>已归档</option>
+      <option value="conflict" {{ 'selected' if current_status == 'conflict' else '' }}>冲突</option>
+    </select>
+    <select name="project_id">
+      <option value="">全部项目</option>
+      {% for p in projects %}
+      <option value="{{ p.id }}" {{ 'selected' if current_project == p.id|string else '' }}>{{ p.name }}</option>
+      {% endfor %}
+    </select>
+    <select name="sensitivity">
+      <option value="">全部敏感级别</option>
+      <option value="public_summary" {{ 'selected' if current_sensitivity == 'public_summary' else '' }}>公开摘要</option>
+      <option value="project_restricted" {{ 'selected' if current_sensitivity == 'project_restricted' else '' }}>项目受限</option>
+      <option value="sensitive" {{ 'selected' if current_sensitivity == 'sensitive' else '' }}>敏感</option>
+    </select>
+    <button type="submit" class="btn btn-primary btn-sm">🔍 筛选</button>
+    <a href="/admin/knowledge" class="btn btn-outline btn-sm">重置</a>
+  </form>
+</div>
+
+<div class="card">
+  {% if items %}
+  <table>
+    <thead>
+      <tr>
+        <th>标题</th>
+        <th>项目</th>
+        <th>类型</th>
+        <th>敏感级别</th>
+        <th>状态</th>
+        <th>创建时间</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      {% set project_name = project_names.get(item.project_id|string, '') %}
+      {% include "partials/_knowledge_row.html" %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <div class="icon">📭</div>
+    <h3>暂无知识条目</h3>
+    <p class="text-muted">前往 <a href="/admin/ingest">资料投喂</a> 添加第一批资料</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
