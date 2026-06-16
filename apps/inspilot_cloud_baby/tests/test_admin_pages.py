@@ -12,10 +12,10 @@ def test_ingest_admin_page_renders() -> None:
     assert "资料投喂" in response.text
 
 
-def test_dws_admin_page_renders() -> None:
+def test_dingtalk_admin_page_renders() -> None:
     client = TestClient(create_app())
 
     response = client.get("/admin/dws")
 
     assert response.status_code == 200
-    assert "DWS 流程导入" in response.text
+    assert "钉钉审批流程导入" in response.text

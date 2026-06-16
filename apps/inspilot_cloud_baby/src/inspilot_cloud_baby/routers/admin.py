@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 from inspilot_cloud_baby.config import settings
 from inspilot_cloud_baby.db import SessionLocal
 from inspilot_cloud_baby.dingtalk_admin import DingTalkAdminClient
-from inspilot_cloud_baby.dws_adapter import DwsAdapter, DwsWorkflow
 from inspilot_cloud_baby.embedding import get_embedding_service
 from inspilot_cloud_baby.ingest.classifier import classify_material
 from inspilot_cloud_baby.models import (
@@ -100,13 +99,13 @@ def _ctx(request: Request, **extra: object) -> dict:
 
 def _has_admin_credentials() -> bool:
     """Check if enterprise admin credentials are configured."""
-    return bool(settings.dws_client_id and settings.dws_client_secret)
+    return bool(settings.dingtalk_app_key and settings.dingtalk_app_secret)
 
 
 def _admin_client() -> DingTalkAdminClient | None:
     """Return a DingTalkAdminClient if credentials are configured."""
     if _has_admin_credentials():
-        return DingTalkAdminClient(settings.dws_client_id, settings.dws_client_secret)
+        return DingTalkAdminClient(settings.dingtalk_app_key, settings.dingtalk_app_secret)
     return None
 
 
@@ -233,9 +232,7 @@ def projects_page(request: Request):
 
 @router.get("/dws")
 def dws_page(request: Request):
-    return templates.TemplateResponse(
-        request, "dws.html", _ctx(request, settings_dws_binary=settings.dws_binary)
-    )
+    return templates.TemplateResponse(request, "dws.html", _ctx(request))
 
 
 # ---------------------------------------------------------------------------
@@ -390,37 +387,43 @@ def knowledge_delete(request: Request, item_id: str):
 
 @router.get("/dws/status")
 def dws_status(request: Request):
-    """Check DWS CLI connection and auth status."""
-    adapter = DwsAdapter(binary=settings.dws_binary, client_id=settings.dws_client_id, client_secret=settings.dws_client_secret)
-    conn = adapter.test_connection()
+    """Check DingTalk admin API connection status."""
     admin_ok = False
     admin_error = ""
     if _has_admin_credentials():
-        try:
-            admin = _admin_client()
-            admin._ensure_token()
-            admin_ok = True
-        except Exception as exc:
-            admin_error = str(exc)
+        admin = _admin_client()
+        if admin:
+            admin_ok, admin_error = admin.test_connection()
     return templates.TemplateResponse(
         request,
         "partials/_dws_status.html",
-        _ctx(request, conn=conn, has_admin=_has_admin_credentials(), admin_ok=admin_ok, admin_error=admin_error),
+        _ctx(request, has_admin=_has_admin_credentials(), admin_ok=admin_ok, admin_error=admin_error),
     )
 
 
 @router.get("/dws/list")
 def dws_list(request: Request):
-    """List all accessible approval instances for the current user."""
-    adapter = DwsAdapter(binary=settings.dws_binary, client_id=settings.dws_client_id, client_secret=settings.dws_client_secret)
-    conn = adapter.test_connection()
-    if not conn.success:
+    """List recent approval instances accessible to the enterprise app.
+
+    Note: DingTalk has no per-user pending-approval API in this client, so this
+    scans recent instances across known process codes (an approximation).
+    """
+    admin = _admin_client()
+    if not admin:
         return templates.TemplateResponse(
             request,
             "partials/_dws_error.html",
-            _ctx(request, error=conn.error, workflow_id=""),
+            _ctx(request, error="需要配置企业管理 API（AppKey/AppSecret）", workflow_id=""),
         )
-    approvals = adapter.list_approvals()
+    try:
+        details = admin.list_recent_instances(days=7, limit=50)
+    except Exception as exc:  # noqa: BLE001 — surfaced to the user
+        return templates.TemplateResponse(
+            request,
+            "partials/_dws_error.html",
+            _ctx(request, error=str(exc), workflow_id=""),
+        )
+    approvals = [DingTalkAdminClient.to_workflow(d) for d in details]
     return templates.TemplateResponse(
         request,
         "partials/_dws_list.html",
@@ -430,84 +433,54 @@ def dws_list(request: Request):
 
 @router.post("/dws/preview")
 def dws_preview(request: Request, workflow_id: str = Form("")):
-    """Preview DWS workflow data — uses enterprise admin API if configured."""
+    """Preview an approval instance via the DingTalk admin API."""
     # Fetch projects for the import form dropdown
     def _query():
         with SessionLocal() as session:
             return list(session.scalars(select(Project).order_by(Project.name)).all())
     projects = _db_query(_query) or []
 
-    # Try enterprise admin API first (can access ALL instances)
     admin = _admin_client()
-    if admin:
+    if not admin:
+        return templates.TemplateResponse(
+            request,
+            "partials/_dws_error.html",
+            _ctx(request, error="需要配置企业管理 API（AppKey/AppSecret）", workflow_id=workflow_id),
+        )
+
+    # If it looks like a businessId (all digits), resolve it first
+    instance_id = workflow_id
+    if workflow_id.isdigit():
         try:
-            # If it looks like a businessId (all digits), resolve it first
-            instance_id = workflow_id
-            if workflow_id.isdigit():
-                try:
-                    resolved = admin.resolve_business_id_fast(workflow_id)
-                except ValueError as e:
-                    return templates.TemplateResponse(
-                        request,
-                        "partials/_dws_error.html",
-                        _ctx(request, error=str(e), workflow_id=workflow_id),
-                    )
-                if resolved:
-                    instance_id = resolved
-                else:
-                    return templates.TemplateResponse(
-                        request,
-                        "partials/_dws_error.html",
-                        _ctx(request, error=f"企业管理 API 未找到工单号 {workflow_id} 对应的审批实例", workflow_id=workflow_id),
-                    )
-            detail = admin.get_detail(instance_id)
-            # Convert AdminWorkflowDetail to DwsWorkflow for template compatibility
-            workflow = DwsWorkflow(
-                title=detail.title,
-                status=detail.status,
-                originator=detail.originator_user_id,
-                form_data=detail.form_data,
-                operation_records=detail.operation_records,
-                attachments=[
-                    {"field_name": a.field_name, "file_name": a.file_name,
-                     "file_id": a.file_id, "download_url": a.download_url,
-                     "file_size": a.file_size, "component_type": a.component_type}
-                    for a in detail.attachments
-                ],
-                comments=[
-                    {"user_id": c.user_id, "content": c.content, "timestamp": c.timestamp}
-                    for c in detail.comments
-                ],
-                raw_json=detail.raw,
-            )
+            resolved = admin.resolve_business_id_fast(workflow_id)
+        except ValueError as e:
             return templates.TemplateResponse(
                 request,
-                "partials/_dws_preview.html",
-                _ctx(request, workflow=workflow, workflow_id=instance_id, projects=projects),
+                "partials/_dws_error.html",
+                _ctx(request, error=str(e), workflow_id=workflow_id),
             )
-        except Exception as exc:
-            logger.warning("Admin API failed, falling back to DWS CLI: %s", exc)
+        if resolved:
+            instance_id = resolved
+        else:
+            return templates.TemplateResponse(
+                request,
+                "partials/_dws_error.html",
+                _ctx(request, error=f"企业管理 API 未找到工单号 {workflow_id} 对应的审批实例", workflow_id=workflow_id),
+            )
 
-    # Fallback to DWS CLI (personal OAuth mode)
-    adapter = DwsAdapter(binary=settings.dws_binary, client_id=settings.dws_client_id, client_secret=settings.dws_client_secret)
-    conn = adapter.test_connection()
-    if not conn.success:
+    try:
+        detail = admin.get_detail(instance_id)
+    except Exception as exc:  # noqa: BLE001 — surfaced to the user
         return templates.TemplateResponse(
             request,
             "partials/_dws_error.html",
-            _ctx(request, error=conn.error, workflow_id=workflow_id),
+            _ctx(request, error=str(exc), workflow_id=workflow_id),
         )
-    result = adapter.fetch_workflow_safe(workflow_id=workflow_id)
-    if isinstance(result, str):
-        return templates.TemplateResponse(
-            request,
-            "partials/_dws_error.html",
-            _ctx(request, error=result, workflow_id=workflow_id),
-        )
+    workflow = DingTalkAdminClient.to_workflow(detail)
     return templates.TemplateResponse(
         request,
         "partials/_dws_preview.html",
-        _ctx(request, workflow=result, workflow_id=workflow_id, projects=projects),
+        _ctx(request, workflow=workflow, workflow_id=instance_id, projects=projects),
     )
 
 
@@ -518,18 +491,24 @@ def dws_import(
     title: str = Form(""),
     project_id: str = Form(""),
 ):
-    """Import a DWS workflow as a knowledge item."""
-    adapter = DwsAdapter(binary=settings.dws_binary, client_id=settings.dws_client_id, client_secret=settings.dws_client_secret)
-    result = adapter.fetch_workflow_safe(workflow_id=workflow_id)
-
-    if isinstance(result, str):
+    """Import an approval instance as a knowledge item via the DingTalk admin API."""
+    admin = _admin_client()
+    if not admin:
         return templates.TemplateResponse(
             request,
             "partials/_dws_error.html",
-            _ctx(request, error=result, workflow_id=workflow_id),
+            _ctx(request, error="需要配置企业管理 API（AppKey/AppSecret）", workflow_id=workflow_id),
         )
 
-    workflow: DwsWorkflow = result
+    try:
+        detail = admin.get_detail(workflow_id)
+    except Exception as exc:  # noqa: BLE001 — surfaced to the user
+        return templates.TemplateResponse(
+            request,
+            "partials/_dws_error.html",
+            _ctx(request, error=str(exc), workflow_id=workflow_id),
+        )
+    workflow = DingTalkAdminClient.to_workflow(detail)
 
     # Build the knowledge body from workflow data
     body_parts = [f"# {workflow.title or title or workflow_id}"]
@@ -554,7 +533,7 @@ def dws_import(
     if workflow.attachments:
         body_parts.append("\n## 附件")
         for att in workflow.attachments:
-            body_parts.append(f"- {att.get('name', '附件')}")
+            body_parts.append(f"- {att.get('file_name', att.get('field_name', '附件'))}")
 
     body = "\n".join(body_parts)
 
@@ -564,9 +543,9 @@ def dws_import(
     def _query():
         with SessionLocal() as session:
             item = KnowledgeItem(
-                title=f"[DWS] {workflow.title or title or workflow_id}",
+                title=f"[钉钉审批] {workflow.title or title or workflow_id}",
                 body=body,
-                source_type="dws_workflow",
+                source_type="dingtalk_approval",
                 sensitivity=KnowledgeSensitivity.PROJECT_RESTRICTED,
                 status=KnowledgeStatus.PENDING_REVIEW,
                 project_id=uuid.UUID(project_id) if project_id else None,
@@ -576,7 +555,7 @@ def dws_import(
                     "originator": workflow.originator,
                     "form_fields": list(workflow.form_data.keys()),
                 },
-                created_by="dws_import",
+                created_by="dingtalk_import",
             )
             session.add(item)
             _attach_embedding(item)
@@ -592,29 +571,8 @@ def dws_import(
 
 
 # ---------------------------------------------------------------------------
-# Batch DWS operations
+# Batch DingTalk approval operations
 # ---------------------------------------------------------------------------
-
-def _admin_detail_to_workflow(detail) -> DwsWorkflow:
-    """Convert AdminWorkflowDetail to DwsWorkflow for template use."""
-    return DwsWorkflow(
-        title=detail.title,
-        status=detail.status,
-        originator=detail.originator_user_id,
-        form_data=detail.form_data,
-        operation_records=detail.operation_records,
-        attachments=[
-            {"field_name": a.field_name, "file_name": a.file_name,
-             "file_id": a.file_id, "download_url": a.download_url,
-             "file_size": a.file_size, "component_type": a.component_type}
-            for a in detail.attachments
-        ],
-        comments=[
-            {"user_id": c.user_id, "content": c.content, "timestamp": c.timestamp}
-            for c in detail.comments
-        ],
-        raw_json=detail.raw,
-    )
 
 
 @router.post("/dws/batch-preview")
@@ -655,7 +613,7 @@ def dws_batch_preview(request: Request, workflow_ids: str = Form("")):
 
     # Batch fetch
     result = admin.batch_get_details(resolved_ids)
-    workflows = [_admin_detail_to_workflow(d) for d in result.succeeded]
+    workflows = [DingTalkAdminClient.to_workflow(d) for d in result.succeeded]
 
     # Merge resolve errors with fetch errors
     all_failed = resolve_errors + result.failed
@@ -729,9 +687,9 @@ def dws_batch_import(
             def _query(pid=detail.process_instance_id, b=body, t=detail.title, st=detail.status):
                 with SessionLocal() as session:
                     item = KnowledgeItem(
-                        title=f"[DWS] {t or pid}",
+                        title=f"[钉钉审批] {t or pid}",
                         body=b,
-                        source_type="dws_workflow",
+                        source_type="dingtalk_approval",
                         sensitivity=KnowledgeSensitivity.PROJECT_RESTRICTED,
                         status=KnowledgeStatus.PENDING_REVIEW,
                         project_id=uuid.UUID(project_id) if project_id else None,
@@ -741,7 +699,7 @@ def dws_batch_import(
                             "originator": detail.originator_user_id,
                             "form_fields": list(detail.form_data.keys()),
                         },
-                        created_by="dws_batch_import",
+                        created_by="dingtalk_batch_import",
                     )
                     session.add(item)
                     _attach_embedding(item)

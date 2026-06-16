@@ -12,10 +12,9 @@
       <div style="margin-top: 12px;">
         <p class="text-sm" style="color: #7f1d1d;"><strong>常见原因：</strong></p>
         <ul class="text-sm" style="color: #7f1b1d; padding-left: 20px; margin-top: 4px;">
-          <li><strong>API 权限不足</strong> — DWS OAuth Token 只能访问你是审批人或发起人的流程。你在钉钉 App 能看到的流程不一定能通过 API 访问</li>
+          <li><strong>API 权限不足</strong> — 企业内部应用的 access_token 需要「审批」相关权限才能访问审批实例</li>
           <li><strong>输入了工单号而非实例 ID</strong> — 如果是纯数字（如 <code>202602031722000061965</code>），请确认它是否为工单号。尝试从钉钉 OA 审批详情页 URL 中获取 <code>processInstanceId</code></li>
           <li><strong>流程 ID 不存在或已删除</strong></li>
-          <li>DWS CLI 未登录 — 运行 <code>dws auth login</code></li>
         </ul>
       </div>
       <div style="margin-top: 12px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 12px;">

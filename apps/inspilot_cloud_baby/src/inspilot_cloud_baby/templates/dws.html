@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}DWS 导入 - InsPilot 云小宝 Alpha{% endblock %}
-{% block page_title %}DWS 流程导入{% endblock %}
-{% block page_desc %}从钉钉 OA 审批流程导入历史数据到知识库{% endblock %}
+{% block title %}钉钉审批导入 - InsPilot 云小宝 Alpha{% endblock %}
+{% block page_title %}钉钉审批流程导入{% endblock %}
+{% block page_desc %}通过钉钉企业管理 API 拉取 OA 审批流程并导入知识库{% endblock %}
 
 {% block content %}
 <style>
@@ -160,7 +160,7 @@ document.getElementById('batch-form').addEventListener('htmx:afterRequest', func
   ⚙️ 连接状态与配置指南（展开）
 </summary>
 <div class="card" style="margin-top: 8px;">
-  <div class="card-header">🔌 DWS 连接状态</div>
+  <div class="card-header">🔌 钉钉企业管理 API 连接状态</div>
   <div id="dws-connection-status">
     <div style="display: flex; align-items: center; gap: 12px;">
       <button class="btn btn-primary btn-sm"
@@ -171,100 +171,19 @@ document.getElementById('batch-form').addEventListener('htmx:afterRequest', func
         <span class="htmx-hide-on-request">🔍 检测连接</span>
         <span id="status-spinner" class="htmx-indicator">⏳ 检测中...</span>
       </button>
-      <span class="text-muted text-sm">点击检测 DWS CLI 是否已安装并完成认证</span>
+      <span class="text-muted text-sm">点击检测钉钉企业管理 API 凭证是否有效</span>
     </div>
-  </div>
-</div>
-
-<div class="card">
-  <div class="card-header">⚙️ DWS 配置指南</div>
-  <div class="guide-box" style="margin-bottom: 0; border: none; padding: 0;">
-    <h3>前提条件</h3>
-    <ul>
-      <li><strong>DWS CLI 工具</strong>已安装 — 钉钉企业管理员授权后的命令行工具</li>
-      <li>已完成 <code>dws auth login</code> 企业认证登录</li>
-    </ul>
-  </div>
-
-  <div style="margin-top: 16px;">
-    <h4 style="font-size: 14px; margin-bottom: 8px;">📋 配置步骤</h4>
-    <table>
-      <thead>
-        <tr>
-          <th style="width: 40px;">#</th>
-          <th>步骤</th>
-          <th>命令 / 说明</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><strong>1</strong></td>
-          <td>安装 DWS CLI</td>
-          <td>确保 <code>dws</code> 在系统 PATH 中。当前路径：<code>{{ settings_dws_binary }}</code></td>
-        </tr>
-        <tr>
-          <td><strong>2</strong></td>
-          <td>验证安装</td>
-          <td><code>dws --help</code> — 应列出可用的 MCP 服务（oa、chat、doc 等）</td>
-        </tr>
-        <tr>
-          <td><strong>3</strong></td>
-          <td>登录认证</td>
-          <td><code>dws auth login</code> — 扫码完成企业授权登录</td>
-        </tr>
-        <tr>
-          <td><strong>4</strong></td>
-          <td>验证认证</td>
-          <td><code>dws auth status</code> — 应显示 <code>"authenticated": true</code></td>
-        </tr>
-        <tr>
-          <td><strong>5</strong></td>
-          <td>测试流程获取</td>
-          <td><code>dws oa approval detail --instance-id "流程ID" --format json</code></td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div style="margin-top: 16px;">
-    <h4 style="font-size: 14px; margin-bottom: 8px;">🔑 环境变量配置</h4>
-    <p class="text-sm text-muted mb-2">
-      可在 <code>.env</code> 文件或环境变量中配置以下参数：
-    </p>
-    <table>
-      <thead>
-        <tr><th>变量</th><th>说明</th><th>默认值</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><code>BUSINESS_ROBOT_DWS_BINARY</code></td>
-          <td>DWS CLI 路径</td>
-          <td><code>dws</code></td>
-        </tr>
-        <tr>
-          <td><code>BUSINESS_ROBOT_DWS_CLIENT_ID</code></td>
-          <td>企业内部应用 AppKey（可选）</td>
-          <td>空（个人模式）</td>
-        </tr>
-        <tr>
-          <td><code>BUSINESS_ROBOT_DWS_CLIENT_SECRET</code></td>
-          <td>企业内部应用 AppSecret（可选）</td>
-          <td>空（个人模式）</td>
-        </tr>
-      </tbody>
-    </table>
   </div>
 </div>
 
 {# ---- Enterprise app mode guide ---- #}
 <div class="card">
-  <div class="card-header">🏢 企业内部应用模式（推荐 — 可访问全部审批）</div>
+  <div class="card-header">🏢 企业内部应用模式（可访问全部审批）</div>
   <div class="guide-box" style="margin-bottom: 0; border: none; padding: 0;">
-    <h3>为什么要配置企业内部应用？</h3>
+    <h3>如何配置企业内部应用？</h3>
     <ul>
-      <li><strong>个人 OAuth 模式</strong>（<code>dws auth login</code>）只能访问你作为<strong>审批人</strong>或<strong>发起人</strong>的流程</li>
-      <li><strong>被抄送的流程</strong>、<strong>已流转到其他节点的流程</strong>均无法通过个人 OAuth 访问</li>
-      <li><strong>企业内部应用模式</strong>使用 AppKey/AppSecret 获取 access_token，可访问<strong>全部审批实例</strong></li>
+      <li>使用 AppKey/AppSecret 获取 access_token，调用钉钉开放平台 <code>/topapi/processinstance/*</code> 接口，可访问<strong>全部审批实例</strong></li>
+      <li>授权后即可在上方「单条/批量查询」中拉取审批流程</li>
     </ul>
   </div>
 
@@ -305,14 +224,33 @@ document.getElementById('batch-form').addEventListener('htmx:afterRequest', func
           <td><strong>6</strong></td>
           <td>配置 InsPilot</td>
           <td>在 <code>.env</code> 文件中写入：
-            <pre style="background: #f8fafc; padding: 8px; border-radius: 4px; margin-top: 4px; font-size: 13px;">BUSINESS_ROBOT_DWS_CLIENT_ID=你的AppKey
-BUSINESS_ROBOT_DWS_CLIENT_SECRET=你的AppSecret</pre>
+            <pre style="background: #f8fafc; padding: 8px; border-radius: 4px; margin-top: 4px; font-size: 13px;">BUSINESS_ROBOT_DINGTALK_APP_KEY=你的AppKey
+BUSINESS_ROBOT_DINGTALK_APP_SECRET=你的AppSecret</pre>
           </td>
         </tr>
         <tr>
           <td><strong>7</strong></td>
           <td>重启服务验证</td>
           <td>重启 InsPilot 后，点击上方「检测连接」按钮确认状态</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div style="margin-top: 16px;">
+    <h4 style="font-size: 14px; margin-bottom: 8px;">🔑 环境变量</h4>
+    <table>
+      <thead>
+        <tr><th>变量</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>BUSINESS_ROBOT_DINGTALK_APP_KEY</code></td>
+          <td>企业内部应用 AppKey</td>
+        </tr>
+        <tr>
+          <td><code>BUSINESS_ROBOT_DINGTALK_APP_SECRET</code></td>
+          <td>企业内部应用 AppSecret</td>
         </tr>
       </tbody>
     </table>

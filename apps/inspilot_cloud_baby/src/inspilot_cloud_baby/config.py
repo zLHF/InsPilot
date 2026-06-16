@@ -8,11 +8,10 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://inspilot_cloud_baby:inspilot_cloud_baby@localhost:5432/inspilot_cloud_baby"
     attachment_root: Path = Path("./var/attachments")
-    dws_binary: str = "dws"
-    # Enterprise internal app credentials — enables admin-level API access
-    # (can query ALL approval instances, not just personal ones)
-    dws_client_id: str = ""      # DingTalk AppKey
-    dws_client_secret: str = ""  # DingTalk AppSecret
+    # DingTalk enterprise internal app credentials (AppKey/AppSecret) — enables
+    # admin-level API access (can query ALL approval instances org-wide).
+    dingtalk_app_key: str = ""      # DingTalk AppKey
+    dingtalk_app_secret: str = ""   # DingTalk AppSecret
 
     # OpenAI Embedding 配置
     openai_api_key: str = ""  # BUSINESS_ROBOT_OPENAI_API_KEY

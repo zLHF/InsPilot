@@ -1,0 +1,126 @@
+"""Tests for the direct DingTalk admin API client (dingtalk_admin.py)."""
+from __future__ import annotations
+
+from unittest.mock import patch
+
+from inspilot_cloud_baby.dingtalk_admin import (
+    AdminAttachment,
+    AdminComment,
+    AdminWorkflowDetail,
+    DingTalkAdminClient,
+    WorkflowDoc,
+)
+
+
+def _sample_detail() -> AdminWorkflowDetail:
+    return AdminWorkflowDetail(
+        process_instance_id="PROC-001",
+        business_id="202606101118000214667",
+        title="车险费率变更申请",
+        status="COMPLETED",
+        originator_user_id="user-001",
+        form_data={"机构类型": "经纪公司", "费率": "0.85"},
+        cc_user_ids=["user-002"],
+        operation_records=[{"userId": "user-001", "remark": "发起", "date_formatted": "2026-06-10"}],
+        attachments=[AdminAttachment(field_name="附件", component_type="DDAttachment", file_name="方案.pdf")],
+        comments=[AdminComment(comment_id="c1", user_id="user-003", content="已确认")],
+    )
+
+
+def test_to_workflow_maps_all_fields() -> None:
+    detail = _sample_detail()
+
+    doc = DingTalkAdminClient.to_workflow(detail)
+
+    assert isinstance(doc, WorkflowDoc)
+    assert doc.title == "车险费率变更申请"
+    assert doc.status == "COMPLETED"
+    assert doc.originator == "user-001"
+    assert doc.process_instance_id == "PROC-001"
+    assert doc.form_data == {"机构类型": "经纪公司", "费率": "0.85"}
+    assert len(doc.operation_records) == 1
+    assert doc.attachments[0]["file_name"] == "方案.pdf"
+    assert doc.comments[0]["content"] == "已确认"
+
+
+def test_to_workflow_is_idempotent_on_empty_detail() -> None:
+    detail = AdminWorkflowDetail(
+        process_instance_id="",
+        business_id="",
+        title="",
+        status="",
+        originator_user_id="",
+    )
+    doc = DingTalkAdminClient.to_workflow(detail)
+
+    assert doc.title == ""
+    assert doc.form_data == {}
+    assert doc.attachments == []
+    assert doc.comments == []
+
+
+def test_test_connection_ok_when_token_refresh_succeeds() -> None:
+    client = DingTalkAdminClient("key", "secret")
+
+    with patch.object(DingTalkAdminClient, "_ensure_token", return_value="token") as mock:
+        ok, message = client.test_connection()
+
+    assert ok is True
+    assert message == ""
+    mock.assert_called_once()
+
+
+def test_test_connection_reports_failure_when_token_refresh_raises() -> None:
+    client = DingTalkAdminClient("bad-key", "bad-secret")
+
+    with patch.object(
+        DingTalkAdminClient, "_ensure_token", side_effect=RuntimeError("invalid appKey")
+    ):
+        ok, message = client.test_connection()
+
+    assert ok is False
+    assert "invalid appKey" in message
+
+
+def test_list_recent_instances_aggregates_details_within_limit() -> None:
+    client = DingTalkAdminClient("key", "secret")
+    detail = _sample_detail()
+
+    with (
+        patch.object(DingTalkAdminClient, "list_process_codes", return_value=["PROC-A"]),
+        patch.object(
+            DingTalkAdminClient,
+            "list_instance_ids",
+            return_value=(["i1", "i2", "i3"], 0),
+        ),
+        patch.object(DingTalkAdminClient, "get_detail", return_value=detail) as mock_detail,
+    ):
+        results = client.list_recent_instances(days=7, limit=2)
+
+    assert len(results) == 2  # capped at limit
+    assert all(r.title == "车险费率变更申请" for r in results)
+    assert mock_detail.call_count == 2
+
+
+def test_list_recent_instances_skips_detail_errors() -> None:
+    client = DingTalkAdminClient("key", "secret")
+    detail = _sample_detail()
+
+    with (
+        patch.object(DingTalkAdminClient, "list_process_codes", return_value=["PROC-A"]),
+        patch.object(
+            DingTalkAdminClient,
+            "list_instance_ids",
+            return_value=(["good", "bad"], 0),
+        ),
+        patch.object(
+            DingTalkAdminClient,
+            "get_detail",
+            side_effect=[detail, RuntimeError("not found")],
+        ),
+    ):
+        results = client.list_recent_instances(days=7, limit=5)
+
+    # "good" succeeded, "bad" raised and was skipped — only 1 result
+    assert len(results) == 1
+    assert results[0].title == "车险费率变更申请"

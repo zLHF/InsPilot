@@ -64,6 +64,25 @@ class BatchFetchResult:
     failed: list[dict] = field(default_factory=list)  # [{"id": str, "error": str}]
 
 
+@dataclass(frozen=True)
+class WorkflowDoc:
+    """Template-facing view of a DingTalk approval instance.
+
+    The admin UI renders this shape; it is produced from an
+    AdminWorkflowDetail via DingTalkAdminClient.to_workflow().
+    """
+
+    title: str
+    status: str = ""
+    originator: str = ""
+    process_instance_id: str = ""
+    form_data: dict[str, str] = field(default_factory=dict)
+    operation_records: list[dict] = field(default_factory=list)
+    attachments: list[dict] = field(default_factory=list)
+    comments: list[dict] = field(default_factory=list)
+    raw_json: dict = field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # DingTalk Admin API client
 # ---------------------------------------------------------------------------
@@ -382,6 +401,38 @@ class DingTalkAdminClient:
         return result
 
     # ------------------------------------------------------------------
+    # View-model conversion
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def to_workflow(detail: AdminWorkflowDetail) -> WorkflowDoc:
+        """Convert an AdminWorkflowDetail into the template-facing WorkflowDoc."""
+        return WorkflowDoc(
+            title=detail.title,
+            status=detail.status,
+            originator=detail.originator_user_id,
+            process_instance_id=detail.process_instance_id,
+            form_data=detail.form_data,
+            operation_records=detail.operation_records,
+            attachments=[
+                {
+                    "field_name": a.field_name,
+                    "file_name": a.file_name,
+                    "file_id": a.file_id,
+                    "download_url": a.download_url,
+                    "file_size": a.file_size,
+                    "component_type": a.component_type,
+                }
+                for a in detail.attachments
+            ],
+            comments=[
+                {"user_id": c.user_id, "content": c.content, "timestamp": c.timestamp}
+                for c in detail.comments
+            ],
+            raw_json=detail.raw,
+        )
+
+    # ------------------------------------------------------------------
     # Business ID resolution
     # ------------------------------------------------------------------
 
@@ -515,3 +566,69 @@ class DingTalkAdminClient:
                 if result:
                     return result
         return None
+
+    # ------------------------------------------------------------------
+    # Connection health check
+    # ------------------------------------------------------------------
+
+    def test_connection(self) -> tuple[bool, str]:
+        """Validate AppKey/AppSecret by refreshing the access_token.
+
+        Returns (ok, message). Unlike _ensure_token (which raises), this
+        captures errors and reports them as a structured status.
+        """
+        try:
+            self._ensure_token()
+            return True, ""
+        except Exception as exc:  # noqa: BLE001 — surfaced as connection status
+            return False, str(exc)
+
+    # ------------------------------------------------------------------
+    # Recent instance listing (approximation of a pending/todo list)
+    # ------------------------------------------------------------------
+
+    def list_recent_instances(
+        self,
+        *,
+        days: int = 7,
+        limit: int = 50,
+    ) -> list[AdminWorkflowDetail]:
+        """List recently created approval instances across known process codes.
+
+        DingTalk's /topapi/processinstance/listids is org-wide and scoped by
+        process_code + time window — there is no per-user "pending approvals"
+        API in this client. This method scans recent instances across all
+        discovered process codes and is therefore an APPROXIMATION of the
+        list produced by the former DWS `list-pending`/`list-initiated`.
+
+        Results are deduplicated by process_instance_id and capped at *limit*.
+        """
+        now = int(time.time() * 1000)
+        start = now - days * 24 * 3600 * 1000
+        seen: set[str] = set()
+        details: list[AdminWorkflowDetail] = []
+
+        for code in self.list_process_codes():
+            if len(details) >= limit:
+                break
+            try:
+                ids, _ = self.list_instance_ids(
+                    process_code=code,
+                    start_time_ms=start,
+                    end_time_ms=now,
+                    size=min(limit, 20),
+                )
+            except Exception:
+                logger.debug("list_instance_ids failed for code %s", code, exc_info=True)
+                continue
+            for iid in ids:
+                if iid in seen:
+                    continue
+                seen.add(iid)
+                try:
+                    details.append(self.get_detail(iid))
+                except Exception:
+                    logger.debug("get_detail failed for %s", iid, exc_info=True)
+                if len(details) >= limit:
+                    break
+        return details

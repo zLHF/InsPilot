@@ -23,11 +23,3 @@ def test_chat_query_returns_alpha_response() -> None:
     assert response.status_code == 200
     assert "answer" in response.json()
     assert response.json()["sources"] == []
-
-
-def test_dws_preview_requires_workflow_id() -> None:
-    client = TestClient(create_app())
-
-    response = client.post("/dws/preview", json={})
-
-    assert response.status_code == 422
