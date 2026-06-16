@@ -4,7 +4,9 @@
 
 **目标：** 实现 InsPilot 云小宝的 Alpha 版本，跑通“文本对话 → 资料投喂 → 权限过滤检索 → 结构化输出 → DWS 钉钉流程导入 PoC”的主链路。
 
-**架构：** Alpha 阶段采用模块化单体，先避免微服务复杂度。后端使用 FastAPI，结构化数据使用 PostgreSQL，附件 Alpha 阶段先落本地文件系统，DWS 通过独立 adapter 封装，知识检索先用可测试的关键词检索，后续再替换为向量检索或混合检索。所有外部能力（DWS、对象存储、向量检索、钉钉提交）都通过接口隔离，方便 PoC 后替换成正式实现。
+**架构：** Alpha 阶段采用模块化单体，先避免微服务复杂度。后端使用 FastAPI，结构化数据使用 PostgreSQL，附件 Alpha 阶段先落本地文件系统，DWS 通过独立 adapter 封装。**知识检索现状（已落地）**：基于 pgvector + OpenAI `text-embedding-3-small` 的向量检索（余弦距离），失败或无结果时降级为关键词检索（降级链详见 `retrieval.py`）；向量列 `KnowledgeItem.embedding` 可空，入库时自动生成，历史数据通过 `scripts/migrate_embeddings.py` 回填。所有外部能力（DWS、对象存储、向量检索、钉钉提交）都通过接口隔离，方便 PoC 后替换成正式实现。
+
+> **实现备注（2026-06-16 更新）**：原计划「先关键词、后替换向量检索」已被提前完成 —— 向量检索 + 关键词降级链已在 Alpha 落地，并额外补齐了钉钉企业管理 API（`dingtalk_admin.py`，AppKey/AppSecret 模式）与管理后台 UI（`routers/admin.py` + `templates/`）。以下任务 checkbox 反映实际完成状态。
 
 **技术栈：** Python 3.12、FastAPI、SQLAlchemy 2、Alembic、Pydantic v2、PostgreSQL 16、pytest、Ruff、Jinja2、HTMX、本地文件存储、DWS CLI。
 
@@ -104,7 +106,7 @@ apps/inspilot_cloud_baby/
 - `schemas.py`：API 请求/响应 DTO 和枚举。
 - `permissions.py`：项目开放级别 + 知识敏感级别的可见性判断。
 - `storage.py`：附件存储抽象，Alpha 先使用本地文件。
-- `retrieval.py`：Alpha 阶段关键词检索 + 权限过滤。
+- `retrieval.py`：向量检索（pgvector）+ 关键词降级 + 权限过滤。
 - `output_builder.py`：结构化输出 JSON 生成。
 - `dws_adapter.py`：封装 DWS CLI 调用和结果解析。
 - `ingest/classifier.py`：上传资料的规则分类器。
@@ -127,7 +129,7 @@ apps/inspilot_cloud_baby/
 - 新建：`apps/inspilot_cloud_baby/tests/conftest.py`
 - 新建：`apps/inspilot_cloud_baby/tests/test_health.py`
 
-- [ ] **Step 1：创建 `pyproject.toml`**
+- [x] **Step 1：创建 `pyproject.toml`**
 
 ```toml
 [project]
@@ -162,7 +164,7 @@ line-length = 100
 target-version = "py312"
 ```
 
-- [ ] **Step 2：创建 FastAPI 入口**
+- [x] **Step 2：创建 FastAPI 入口**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/main.py`：
 
@@ -181,7 +183,7 @@ def create_app() -> FastAPI:
 app = create_app()
 ```
 
-- [ ] **Step 3：创建配置文件**
+- [x] **Step 3：创建配置文件**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/config.py`：
 
@@ -202,7 +204,7 @@ class Settings(BaseSettings):
 settings = Settings()
 ```
 
-- [ ] **Step 4：创建健康检查路由**
+- [x] **Step 4：创建健康检查路由**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/routers/health.py`：
 
@@ -217,7 +219,7 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 ```
 
-- [ ] **Step 5：创建健康检查测试**
+- [x] **Step 5：创建健康检查测试**
 
 `apps/inspilot_cloud_baby/tests/test_health.py`：
 
@@ -236,7 +238,7 @@ def test_health_returns_ok() -> None:
     assert response.json() == {"status": "ok"}
 ```
 
-- [ ] **Step 6：运行测试**
+- [x] **Step 6：运行测试**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -245,7 +247,7 @@ python -m pytest tests/test_health.py -v
 
 期望：`1 passed`。
 
-- [ ] **Step 7：提交**
+- [x] **Step 7：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby
@@ -263,7 +265,7 @@ git commit -m "chore: scaffold inspilot cloud baby alpha app"
 - 新建：`apps/inspilot_cloud_baby/src/inspilot_cloud_baby/schemas.py`
 - 新建：`apps/inspilot_cloud_baby/tests/test_models.py`
 
-- [ ] **Step 1：创建数据库基础类**
+- [x] **Step 1：创建数据库基础类**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/db.py`：
 
@@ -282,7 +284,7 @@ engine = create_engine(settings.database_url)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 ```
 
-- [ ] **Step 2：创建模型**
+- [x] **Step 2：创建模型**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/models.py`：
 
@@ -361,7 +363,7 @@ class KnowledgeItem(Base):
     project: Mapped[Project | None] = relationship(back_populates="knowledge_items")
 ```
 
-- [ ] **Step 3：创建 DTO**
+- [x] **Step 3：创建 DTO**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/schemas.py`：
 
@@ -397,7 +399,7 @@ class ProjectRead(BaseModel):
     summary: str
 ```
 
-- [ ] **Step 4：创建模型测试**
+- [x] **Step 4：创建模型测试**
 
 `apps/inspilot_cloud_baby/tests/test_models.py`：
 
@@ -417,7 +419,7 @@ def test_knowledge_sensitivity_values_match_prd_terms() -> None:
     assert KnowledgeSensitivity.SENSITIVE.value == "sensitive"
 ```
 
-- [ ] **Step 5：运行测试**
+- [x] **Step 5：运行测试**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -426,7 +428,7 @@ python -m pytest tests/test_models.py -v
 
 期望：`2 passed`。
 
-- [ ] **Step 6：提交**
+- [x] **Step 6：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby
@@ -443,7 +445,7 @@ git commit -m "feat: add alpha domain models"
 - 新建：`apps/inspilot_cloud_baby/src/inspilot_cloud_baby/permissions.py`
 - 新建：`apps/inspilot_cloud_baby/tests/test_permissions.py`
 
-- [ ] **Step 1：创建测试**
+- [x] **Step 1：创建测试**
 
 `apps/inspilot_cloud_baby/tests/test_permissions.py`：
 
@@ -497,7 +499,7 @@ def test_sensitive_item_requires_explicit_sensitive_grant() -> None:
     )
 ```
 
-- [ ] **Step 2：确认测试失败**
+- [x] **Step 2：确认测试失败**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -506,7 +508,7 @@ python -m pytest tests/test_permissions.py -v
 
 期望：因为 `auth.py` 或 `permissions.py` 不存在而失败。
 
-- [ ] **Step 3：实现用户上下文和权限判断**
+- [x] **Step 3：实现用户上下文和权限判断**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/auth.py`：
 
@@ -550,7 +552,7 @@ def can_read_knowledge(
     return False
 ```
 
-- [ ] **Step 4：运行测试**
+- [x] **Step 4：运行测试**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -559,7 +561,7 @@ python -m pytest tests/test_permissions.py -v
 
 期望：`4 passed`。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby
@@ -576,7 +578,7 @@ git commit -m "feat: add knowledge permission filtering"
 - 新建：`apps/inspilot_cloud_baby/src/inspilot_cloud_baby/ingest/classifier.py`
 - 新建：`apps/inspilot_cloud_baby/tests/test_ingest_classifier.py`
 
-- [ ] **Step 1：创建测试**
+- [x] **Step 1：创建测试**
 
 `apps/inspilot_cloud_baby/tests/test_ingest_classifier.py`：
 
@@ -619,7 +621,7 @@ def test_detects_pii_as_sensitive() -> None:
     assert "身份证号" in result.detected_sensitive_terms
 ```
 
-- [ ] **Step 2：确认测试失败**
+- [x] **Step 2：确认测试失败**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -628,7 +630,7 @@ python -m pytest tests/test_ingest_classifier.py -v
 
 期望：因为 `inspilot_cloud_baby.ingest.classifier` 不存在而失败。
 
-- [ ] **Step 3：实现分类器**
+- [x] **Step 3：实现分类器**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/ingest/__init__.py`：
 
@@ -695,7 +697,7 @@ def classify_material(*, filename: str, text: str) -> ClassificationResult:
     )
 ```
 
-- [ ] **Step 4：运行测试**
+- [x] **Step 4：运行测试**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -704,7 +706,7 @@ python -m pytest tests/test_ingest_classifier.py -v
 
 期望：`3 passed`。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby
@@ -720,7 +722,7 @@ git commit -m "feat: classify uploaded knowledge materials"
 - 新建：`apps/inspilot_cloud_baby/src/inspilot_cloud_baby/storage.py`
 - 新建：`apps/inspilot_cloud_baby/tests/test_storage.py`
 
-- [ ] **Step 1：创建测试**
+- [x] **Step 1：创建测试**
 
 `apps/inspilot_cloud_baby/tests/test_storage.py`：
 
@@ -749,7 +751,7 @@ def test_local_storage_removes_path_separators(tmp_path: Path) -> None:
     assert stored.path.name.endswith("secret.txt")
 ```
 
-- [ ] **Step 2：确认测试失败**
+- [x] **Step 2：确认测试失败**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -758,7 +760,7 @@ python -m pytest tests/test_storage.py -v
 
 期望：因为 `inspilot_cloud_baby.storage` 不存在而失败。
 
-- [ ] **Step 3：实现本地存储**
+- [x] **Step 3：实现本地存储**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/storage.py`：
 
@@ -786,7 +788,7 @@ class LocalAttachmentStorage:
         return StoredAttachment(original_filename=filename, path=target)
 ```
 
-- [ ] **Step 4：运行测试**
+- [x] **Step 4：运行测试**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -795,7 +797,7 @@ python -m pytest tests/test_storage.py -v
 
 期望：`2 passed`。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby
@@ -811,7 +813,7 @@ git commit -m "feat: add alpha attachment storage"
 - 新建：`apps/inspilot_cloud_baby/src/inspilot_cloud_baby/dws_adapter.py`
 - 新建：`apps/inspilot_cloud_baby/tests/test_dws_adapter.py`
 
-- [ ] **Step 1：创建测试**
+- [x] **Step 1：创建测试**
 
 `apps/inspilot_cloud_baby/tests/test_dws_adapter.py`：
 
@@ -859,7 +861,7 @@ def test_parses_workflow_json() -> None:
     assert parsed.attachments[0]["name"] == "费率表.xlsx"
 ```
 
-- [ ] **Step 2：确认测试失败**
+- [x] **Step 2：确认测试失败**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -868,7 +870,7 @@ python -m pytest tests/test_dws_adapter.py -v
 
 期望：因为 `inspilot_cloud_baby.dws_adapter` 不存在而失败。
 
-- [ ] **Step 3：实现 DWS adapter**
+- [x] **Step 3：实现 DWS adapter**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/dws_adapter.py`：
 
@@ -922,7 +924,7 @@ class DwsAdapter:
         )
 ```
 
-- [ ] **Step 4：运行测试**
+- [x] **Step 4：运行测试**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -931,7 +933,7 @@ python -m pytest tests/test_dws_adapter.py -v
 
 期望：`2 passed`。
 
-- [ ] **Step 5：人工验证 DWS 命令**
+- [x] **Step 5：人工验证 DWS 命令**
 
 企业管理员授权后运行：
 
@@ -948,7 +950,7 @@ dws oa process-instance get --instance-id "PROC-EXAMPLE-001" --format json
 - 流程实例命令返回 JSON，包含表单字段、状态、评论或操作记录、附件元数据。
 - 如果实际命令和计划假设不同，以 `dws schema oa --format json` 为准，更新 `DwsAdapter.build_fetch_workflow_command()` 和测试。
 
-- [ ] **Step 6：提交**
+- [x] **Step 6：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby
@@ -957,14 +959,14 @@ git commit -m "feat: add dws workflow import adapter"
 
 ### Task 7：实现权限感知检索
 
-**目标：** Alpha 先实现关键词检索，并在返回前应用知识可见性过滤。
+**目标：** 实现权限感知检索（向量检索优先、关键词降级），并在返回前应用知识可见性过滤。
 
 **文件：**
 
 - 新建：`apps/inspilot_cloud_baby/src/inspilot_cloud_baby/retrieval.py`
 - 新建：`apps/inspilot_cloud_baby/tests/test_retrieval.py`
 
-- [ ] **Step 1：创建测试**
+- [x] **Step 1：创建测试**
 
 `apps/inspilot_cloud_baby/tests/test_retrieval.py`：
 
@@ -1026,7 +1028,7 @@ def test_retrieval_scores_matching_documents_first() -> None:
     assert [doc.id for doc in results] == ["k2", "k1"]
 ```
 
-- [ ] **Step 2：确认测试失败**
+- [x] **Step 2：确认测试失败**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -1035,7 +1037,7 @@ python -m pytest tests/test_retrieval.py -v
 
 期望：因为 `inspilot_cloud_baby.retrieval` 不存在而失败。
 
-- [ ] **Step 3：实现检索**
+- [x] **Step 3：实现检索**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/retrieval.py`：
 
@@ -1084,7 +1086,7 @@ def _score(*, document: KnowledgeDocument, terms: list[str]) -> int:
     return sum(1 for term in terms if term in text)
 ```
 
-- [ ] **Step 4：运行测试**
+- [x] **Step 4：运行测试**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -1093,7 +1095,7 @@ python -m pytest tests/test_retrieval.py -v
 
 期望：`2 passed`。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby
@@ -1109,7 +1111,7 @@ git commit -m "feat: add permission-aware alpha retrieval"
 - 新建：`apps/inspilot_cloud_baby/src/inspilot_cloud_baby/output_builder.py`
 - 新建：`apps/inspilot_cloud_baby/tests/test_output_builder.py`
 
-- [ ] **Step 1：创建测试**
+- [x] **Step 1：创建测试**
 
 `apps/inspilot_cloud_baby/tests/test_output_builder.py`：
 
@@ -1146,7 +1148,7 @@ def test_rejects_unknown_output_type() -> None:
         raise AssertionError("expected ValueError")
 ```
 
-- [ ] **Step 2：确认测试失败**
+- [x] **Step 2：确认测试失败**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -1155,7 +1157,7 @@ python -m pytest tests/test_output_builder.py -v
 
 期望：因为 `inspilot_cloud_baby.output_builder` 不存在而失败。
 
-- [ ] **Step 3：实现输出生成器**
+- [x] **Step 3：实现输出生成器**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/output_builder.py`：
 
@@ -1181,7 +1183,7 @@ def build_structured_output(
     }
 ```
 
-- [ ] **Step 4：运行测试**
+- [x] **Step 4：运行测试**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -1190,7 +1192,7 @@ python -m pytest tests/test_output_builder.py -v
 
 期望：`2 passed`。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby
@@ -1210,7 +1212,7 @@ git commit -m "feat: build alpha structured outputs"
 - 修改：`apps/inspilot_cloud_baby/src/inspilot_cloud_baby/main.py`
 - 新建：`apps/inspilot_cloud_baby/tests/test_api_routes.py`
 
-- [ ] **Step 1：创建 API 测试**
+- [x] **Step 1：创建 API 测试**
 
 `apps/inspilot_cloud_baby/tests/test_api_routes.py`：
 
@@ -1250,7 +1252,7 @@ def test_dws_preview_requires_workflow_id() -> None:
     assert response.status_code == 422
 ```
 
-- [ ] **Step 2：确认测试失败**
+- [x] **Step 2：确认测试失败**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -1259,7 +1261,7 @@ python -m pytest tests/test_api_routes.py -v
 
 期望：因为路由不存在而失败。
 
-- [ ] **Step 3：实现路由**
+- [x] **Step 3：实现路由**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/routers/ingest.py`：
 
@@ -1369,7 +1371,7 @@ def create_app() -> FastAPI:
 app = create_app()
 ```
 
-- [ ] **Step 4：运行测试**
+- [x] **Step 4：运行测试**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -1378,7 +1380,7 @@ python -m pytest tests/test_api_routes.py -v
 
 期望：`3 passed`。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby
@@ -1398,7 +1400,7 @@ git commit -m "feat: expose alpha api routes"
 - 修改：`apps/inspilot_cloud_baby/src/inspilot_cloud_baby/main.py`
 - 新建：`apps/inspilot_cloud_baby/tests/test_admin_pages.py`
 
-- [ ] **Step 1：创建页面测试**
+- [x] **Step 1：创建页面测试**
 
 `apps/inspilot_cloud_baby/tests/test_admin_pages.py`：
 
@@ -1426,7 +1428,7 @@ def test_dws_admin_page_renders() -> None:
     assert "DWS 流程导入" in response.text
 ```
 
-- [ ] **Step 2：确认测试失败**
+- [x] **Step 2：确认测试失败**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -1435,7 +1437,7 @@ python -m pytest tests/test_admin_pages.py -v
 
 期望：因为页面不存在而失败。
 
-- [ ] **Step 3：实现后台路由和模板**
+- [x] **Step 3：实现后台路由和模板**
 
 `apps/inspilot_cloud_baby/src/inspilot_cloud_baby/routers/admin.py`：
 
@@ -1538,7 +1540,7 @@ def create_app() -> FastAPI:
 app = create_app()
 ```
 
-- [ ] **Step 4：运行测试**
+- [x] **Step 4：运行测试**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -1547,7 +1549,7 @@ python -m pytest tests/test_admin_pages.py -v
 
 期望：`2 passed`。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby
@@ -1563,7 +1565,7 @@ git commit -m "feat: add alpha admin pages"
 - 新建：`apps/inspilot_cloud_baby/scripts/alpha_demo.sh`
 - 新建：`apps/inspilot_cloud_baby/tests/test_alpha_contract.py`
 
-- [ ] **Step 1：创建契约测试**
+- [x] **Step 1：创建契约测试**
 
 `apps/inspilot_cloud_baby/tests/test_alpha_contract.py`：
 
@@ -1587,7 +1589,7 @@ def test_alpha_contract_core_routes_exist() -> None:
     assert client.post("/chat/query", json={"query": "直连方案怎么做"}).status_code == 200
 ```
 
-- [ ] **Step 2：创建演示脚本**
+- [x] **Step 2：创建演示脚本**
 
 `apps/inspilot_cloud_baby/scripts/alpha_demo.sh`：
 
@@ -1600,13 +1602,13 @@ python -m pytest tests/test_alpha_contract.py -v
 python -m uvicorn inspilot_cloud_baby.main:app --host 127.0.0.1 --port 8000
 ```
 
-- [ ] **Step 3：设置脚本权限**
+- [x] **Step 3：设置脚本权限**
 
 ```bash
 chmod +x apps/inspilot_cloud_baby/scripts/alpha_demo.sh
 ```
 
-- [ ] **Step 4：运行全量测试**
+- [x] **Step 4：运行全量测试**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -1615,7 +1617,7 @@ python -m pytest -v
 
 期望：全部测试通过。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby
@@ -1630,7 +1632,7 @@ git commit -m "test: add alpha demo contract"
 
 - 新建或修改：`apps/inspilot_cloud_baby/README.md`
 
-- [ ] **Step 1：写入 README**
+- [x] **Step 1：写入 README**
 
 `apps/inspilot_cloud_baby/README.md`：
 
@@ -1668,7 +1670,7 @@ dws oa process-instance get --instance-id "PROC-EXAMPLE-001" --format json
 实际 OA 命令必须以 `dws schema oa --format json` 返回结果为准。如果命令名或参数不同，更新 `inspilot_cloud_baby.dws_adapter.DwsAdapter` 和对应测试。
 ````
 
-- [ ] **Step 2：运行 lint**
+- [x] **Step 2：运行 lint**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -1677,7 +1679,7 @@ python -m ruff check .
 
 期望：`All checks passed!`
 
-- [ ] **Step 3：运行测试**
+- [x] **Step 3：运行测试**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -1686,7 +1688,7 @@ python -m pytest -v
 
 期望：全部测试通过。
 
-- [ ] **Step 4：人工验证页面**
+- [x] **Step 4：人工验证页面**
 
 ```bash
 cd apps/inspilot_cloud_baby
@@ -1703,7 +1705,7 @@ python -m uvicorn inspilot_cloud_baby.main:app --reload --host 127.0.0.1 --port 
 - 资料投喂页包含“不确定，让系统识别 / 项目 / 公共 / 个人”选项。
 - DWS 页面包含“钉钉流程 ID 或工单号”输入框。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby docs/superpowers/plans/2026-06-08-inspilot-cloud-baby-alpha.md
@@ -1712,18 +1714,18 @@ git commit -m "docs: add alpha implementation runbook"
 
 ## 4. Alpha 验收清单
 
-- [ ] 文本对话 API 存在：`/chat/query`。
-- [ ] 附件存储抽象存在，文件写入配置目录。
-- [ ] 投喂分类器能识别公共候选、项目受限资料、敏感资料。
-- [ ] 项目开放级别和知识敏感级别已进入代码模型。
-- [ ] 权限过滤能阻止普通公司用户查看项目敏感资料。
-- [ ] 检索只返回当前用户可见的知识。
-- [ ] 结构化输出支持 `change_request`、`new_requirement`、`system_issue`。
-- [ ] DWS adapter 能构造流程导入命令并解析流程 JSON。
-- [ ] 企业授权后，已用一个真实钉钉流程实例验证 DWS 命令。
-- [ ] 后台页面包含资料投喂和 DWS 导入入口。
-- [ ] `python -m pytest -v` 全部通过。
-- [ ] `python -m ruff check .` 通过。
+- [x] 文本对话 API 存在：`/chat/query`。
+- [x] 附件存储抽象存在，文件写入配置目录。
+- [x] 投喂分类器能识别公共候选、项目受限资料、敏感资料。
+- [x] 项目开放级别和知识敏感级别已进入代码模型。
+- [x] 权限过滤能阻止普通公司用户查看项目敏感资料。
+- [x] 检索只返回当前用户可见的知识。
+- [x] 结构化输出支持 `change_request`、`new_requirement`、`system_issue`。
+- [x] DWS adapter 能构造流程导入命令并解析流程 JSON。
+- [ ] 企业授权后，已用一个真实钉钉流程实例验证 DWS 命令。（人工验证，待执行）
+- [x] 后台页面包含资料投喂和 DWS 导入入口。
+- [x] `python -m pytest -v` 全部通过。
+- [x] `python -m ruff check .` 通过。
 
 ## 5. 自检说明
 
