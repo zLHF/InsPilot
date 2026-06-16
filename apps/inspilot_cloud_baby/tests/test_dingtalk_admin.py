@@ -43,6 +43,25 @@ def test_to_workflow_maps_all_fields() -> None:
     assert doc.comments[0]["content"] == "已确认"
 
 
+def test_get_detail_preserves_caller_id_when_api_omits_it() -> None:
+    """Regression: /topapi/processinstance/get does not return process_instance_id,
+    so get_detail must set it from the caller's argument, not the (empty) raw payload."""
+    client = DingTalkAdminClient("key", "secret")
+    # Raw payload as returned by DingTalk — note: NO process_instance_id field
+    raw_without_id = {"title": "测试审批", "status": "COMPLETED", "business_id": "BIZ-1"}
+
+    with (
+        patch.object(DingTalkAdminClient, "get_instance_detail", return_value=raw_without_id),
+        patch.object(DingTalkAdminClient, "get_comments", return_value=[]),
+    ):
+        detail = client.get_detail("THE-REAL-ID")
+
+    assert detail.process_instance_id == "THE-REAL-ID"
+    assert detail.title == "测试审批"
+    # And to_workflow propagates it through to the view model
+    assert DingTalkAdminClient.to_workflow(detail).process_instance_id == "THE-REAL-ID"
+
+
 def test_to_workflow_is_idempotent_on_empty_detail() -> None:
     detail = AdminWorkflowDetail(
         process_instance_id="",

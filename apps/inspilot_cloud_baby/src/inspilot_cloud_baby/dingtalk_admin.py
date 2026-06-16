@@ -363,9 +363,11 @@ class DingTalkAdminClient:
         except Exception:
             logger.warning("Failed to fetch comments for %s", process_instance_id, exc_info=True)
             comments = []
-        # Return new instance with comments (frozen dataclass)
+        # Return new instance with comments (frozen dataclass).
+        # NOTE: /topapi/processinstance/get does NOT echo back process_instance_id,
+        # so we set it from the caller's argument (parse_detail leaves it blank).
         return AdminWorkflowDetail(
-            process_instance_id=detail.process_instance_id,
+            process_instance_id=process_instance_id,
             business_id=detail.business_id,
             title=detail.title,
             status=detail.status,
