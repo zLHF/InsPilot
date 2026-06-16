@@ -20,6 +20,10 @@ def can_read_knowledge(
     if sensitivity == KnowledgeSensitivity.PUBLIC_SUMMARY:
         if project_visibility == ProjectVisibility.COMPANY_VISIBLE:
             return user.is_company_user
-        return project_id is not None and project_id in user.project_ids
+        # No project affiliation (e.g. a shared scheme library) with a public
+        # summary is readable by any company user.
+        if project_id is None:
+            return user.is_company_user
+        return project_id in user.project_ids
 
     return False

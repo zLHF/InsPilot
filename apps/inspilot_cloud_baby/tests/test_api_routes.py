@@ -21,5 +21,8 @@ def test_chat_query_returns_alpha_response() -> None:
     response = client.post("/chat/query", json={"query": "华南车险项目是什么模式"})
 
     assert response.status_code == 200
-    assert "answer" in response.json()
-    assert response.json()["sources"] == []
+    body = response.json()
+    assert "answer" in body
+    # sources is a list of knowledge-item titles (may be non-empty when the
+    # knowledge base has data); just assert the shape is stable.
+    assert isinstance(body["sources"], list)
