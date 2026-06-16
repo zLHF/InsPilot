@@ -235,6 +235,11 @@ def dws_page(request: Request):
     return templates.TemplateResponse(request, "dws.html", _ctx(request))
 
 
+@router.get("/search")
+def search_page(request: Request):
+    return templates.TemplateResponse(request, "search.html", _ctx(request))
+
+
 # ---------------------------------------------------------------------------
 # HTMX partials / API
 # ---------------------------------------------------------------------------

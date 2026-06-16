@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}检索测试 - InsPilot 云小宝{% endblock %}
+{% block page_title %}知识库检索测试{% endblock %}
+{% block page_desc %}输入业务问题，从已导入的方案库中语义检索{% endblock %}
+
+{% block content %}
+<style>
+  .search-box {
+    display: flex; gap: 10px; margin-bottom: 16px; position: sticky; top: 8px;
+    background: var(--bg, #f8fafc); padding: 12px 0; z-index: 10;
+  }
+  .search-box input {
+    flex: 1; padding: 11px 14px; font-size: 15px; border: 1px solid #cbd5e1;
+    border-radius: 8px; outline: none;
+  }
+  .search-box input:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15); }
+  .search-box button {
+    padding: 0 22px; font-size: 15px; white-space: nowrap;
+  }
+  .src-card {
+    border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px;
+    margin-bottom: 10px; background: #fff; transition: box-shadow .15s;
+  }
+  .src-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+  .src-title { font-weight: 600; font-size: 15px; color: #0f172a; margin-bottom: 6px; }
+  .src-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .src-tags .tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+  .tag-region { background: #dbeafe; color: #1e40af; }
+  .tag-insurer { background: #dcfce7; color: #166534; }
+  .tag-integ { background: #fef3c7; color: #92400e; }
+  .tag-date { background: #f1f5f9; color: #475569; }
+  .tag-type { background: #ede9fe; color: #5b21b6; }
+  .src-preview { font-size: 13px; color: #64748b; line-height: 1.6; }
+  .src-preview mark { background: #fef08a; color: #713f12; padding: 0 2px; border-radius: 2px; }
+  .src-rank { display:inline-block; width:22px; height:22px; line-height:22px; text-align:center;
+    border-radius:50%; background:#3b82f6; color:#fff; font-size:11px; margin-right:8px; }
+  .empty-state { text-align:center; padding: 48px 20px; color: #94a3b8; }
+  .spinner { display:inline-block; width:16px; height:16px; border:2px solid #cbd5e1;
+    border-top-color:#3b82f6; border-radius:50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .suggestions { margin-top: 14px; }
+  .suggestions button {
+    font-size: 12px; padding: 4px 10px; margin: 0 6px 6px 0;
+    border-radius: 12px; border: 1px solid #cbd5e1; background: #fff; color: #475569;
+    cursor: pointer;
+  }
+  .suggestions button:hover { border-color: #3b82f6; color: #3b82f6; }
+</style>
+
+<div class="search-box">
+  <input type="text" id="q" placeholder="试试：福建人保退保流程 / 见费出单 / 独立出单模式 / 绵阳国寿财…" autofocus>
+  <button class="btn btn-primary" id="go" onclick="doSearch()">🔍 检索</button>
+</div>
+
+<div class="suggestions" id="sugs">
+  <button onclick="quick('独立出单模式有哪些方案')">独立出单模式</button>
+  <button onclick="quick('见费出单是什么方案')">见费出单</button>
+  <button onclick="quick('福建人保退保流程')">福建人保退保</button>
+  <button onclick="quick('退保怎么操作')">退保操作</button>
+  <button onclick="quick('电子发票怎么申请')">电子发票</button>
+  <button onclick="quick('绵阳的方案')">绵阳方案</button>
+  <button onclick="quick('CA签章')">CA签章</button>
+</div>
+
+<div id="results"></div>
+
+<script>
+const inp = document.getElementById('q');
+const btn = document.getElementById('go');
+const out = document.getElementById('results');
+const sugs = document.getElementById('sugs');
+inp.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+function quick(q){ inp.value = q; doSearch(); }
+
+function badge(cls, label, val){
+  return val ? `<span class="tag ${cls}">${label}${val}</span>` : '';
+}
+
+function highlight(text, query){
+  if(!text) return '';
+  let t = text.replace(/</g,'&lt;');
+  for(const term of query.split(/\s+/).filter(s=>s)){
+    t = t.split(term).join('<mark>'+term+'</mark>');
+  }
+  return t;
+}
+
+async function doSearch(){
+  const q = inp.value.trim();
+  if(!q) return;
+  sugs.style.display = 'none';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  out.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:10px">正在检索…</p></div>';
+  try{
+    const res = await fetch('/chat/query', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({query: q})
+    });
+    const data = await res.json();
+    render(data, q);
+  }catch(e){
+    out.innerHTML = '<div class="empty-state">❌ 请求失败：'+e.message+'</div>';
+  }finally{
+    btn.disabled = false; btn.textContent = '🔍 检索';
+  }
+}
+
+function render(data, q){
+  const items = data.sources || [];
+  if(!items.length){
+    out.innerHTML = `<div class="empty-state"><div style="font-size:40px">🔍</div>
+      <h3>未找到「${q}」相关知识</h3>
+      <p>换个说法试试，或检查知识库是否已导入。</p></div>`;
+    return;
+  }
+  let html = `<div style="margin:8px 0 14px;color:#64748b;font-size:13px">
+    找到 <strong style="color:#0f172a">${data.count}</strong> 条相关方案 · 按语义相似度排序</div>`;
+  items.forEach((s, i) => {
+    const tags = [
+      s.region      ? badge('tag-region','📍 ',s.region) : '',
+      s.insurer     ? badge('tag-insurer','🏥 ',s.insurer) : '',
+      s.integrator  ? badge('tag-integ','🔧 ',s.integrator) : '',
+      s.doc_date    ? badge('tag-date','📅 ',s.doc_date) : '',
+      s.source_type ? badge('tag-type','🗂 ',s.source_type) : '',
+    ].join('');
+    html += `<div class="src-card">
+      <div class="src-title"><span class="src-rank">${i+1}</span>${s.title}</div>
+      <div class="src-tags">${tags}</div>
+      <div class="src-preview">${highlight(s.preview, q)}</div>
+    </div>`;
+  });
+  out.innerHTML = html;
+}
+</script>
+{% endblock %}

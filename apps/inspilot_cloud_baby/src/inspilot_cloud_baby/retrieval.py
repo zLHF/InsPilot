@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -31,6 +31,9 @@ class KnowledgeDocument:
     sensitivity: KnowledgeSensitivity
     title: str
     body: str
+    # Optional provenance for richer display (populated for DB-backed results)
+    source_type: str = ""
+    metadata: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +147,8 @@ def _retrieve_by_vector(
             sensitivity=item.sensitivity,
             title=item.title,
             body=item.body,
+            source_type=item.source_type or "",
+            metadata=item.metadata_json or {},
         )
         if can_read_knowledge(
             user=user,
