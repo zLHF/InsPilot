@@ -800,7 +800,11 @@ def settings_save(
     openai_embedding_model: str = Form(""),
     enable_vector_search: str = Form(""),
 ):
-    """Save settings to DB and reload embedding service."""
+    """Save settings to DB and reload embedding service.
+
+    Unlike most admin handlers, this does NOT swallow DB errors — if the save
+    fails the user is shown the error so it isn't silently lost.
+    """
 
     def _query():
         with SessionLocal() as session:
@@ -818,7 +822,15 @@ def settings_save(
             _save_setting(session, "enable_vector_search", "true" if enable_vector_search else "false")
             session.commit()
 
-    _db_query(_query)
+    try:
+        _query()
+    except Exception as exc:  # noqa: BLE001 — surfaced to the user
+        logger.error("Failed to save settings: %s", exc, exc_info=True)
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            _settings_ctx(request, error=f"保存失败：{exc}"),
+        )
 
     # Hot-reload: reset the singleton so next call picks up new config
     import inspilot_cloud_baby.embedding as emb_mod
@@ -827,6 +839,95 @@ def settings_save(
     # Redirect to GET to show the saved state (PRG pattern)
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/admin/settings?saved=1", status_code=303)
+
+
+def _settings_ctx(request: Request, error: str = "") -> dict:
+    """Build the settings-page context (shared by GET and the save-error path)."""
+    from inspilot_cloud_baby.embedding import get_embedding_service
+
+    db_settings: dict[str, str] = _db_query(lambda: _load_db_settings()) or {}
+
+    if settings.openai_api_key:
+        api_key_source, api_key_hint = "env", "当前使用环境变量配置"
+    elif db_settings.get("openai_api_key"):
+        api_key_source, api_key_hint = "db", "sk-****" + db_settings["openai_api_key"][-4:]
+    else:
+        api_key_source, api_key_hint = "none", "未配置"
+
+    svc = get_embedding_service()
+    stats = _db_query(_count_embedding_stats) or {"embedded": 0, "total": 0}
+
+    return _ctx(
+        request,
+        saved=False,
+        error=error,
+        service_available=svc.available,
+        vector_enabled=settings.enable_vector_search,
+        api_key_source=api_key_source,
+        api_key_hint=api_key_hint,
+        current_base_url=db_settings.get("openai_base_url", ""),
+        current_model=db_settings.get("openai_embedding_model", settings.openai_embedding_model),
+        embedded_count=stats["embedded"],
+        total_count=stats["total"],
+    )
+
+
+@router.post("/settings/test")
+def settings_test(request: Request):
+    """Test the embedding API connection using the CURRENTLY SAVED config.
+
+    Builds a fresh EmbeddingService from effective config (env > DB) so it
+    reflects whatever was just saved, then issues one real embedding request.
+    Returns an HTMX partial showing success/failure.
+    """
+    from inspilot_cloud_baby.embedding import EmbeddingService, get_effective_config
+
+    cfg = get_effective_config()
+    api_key = cfg["api_key"]
+    base_url = cfg["base_url"]
+    model = cfg["model"]
+
+    if not api_key:
+        return templates.TemplateResponse(
+            request,
+            "partials/_settings_test.html",
+            _ctx(request, test_ok=False, test_message="未配置 API Key，无法测试。请先填写并保存 API Key。"),
+        )
+
+    # Build a fresh service (don't reuse the singleton) to test the live config
+    svc = EmbeddingService(api_key=api_key, base_url=base_url, model=model, enable_vector_search=True)
+    vector = svc.embed_text("测试连接")
+
+    if vector is not None:
+        dim = len(vector)
+        endpoint = base_url or "https://api.openai.com/v1 (官方)"
+        return templates.TemplateResponse(
+            request,
+            "partials/_settings_test.html",
+            _ctx(
+                request,
+                test_ok=True,
+                test_message=f"连接成功。模型 {model} 返回 {dim} 维向量。",
+                test_endpoint=endpoint,
+            ),
+        )
+
+    # Failed — show the endpoint + model attempted
+    endpoint = base_url or "https://api.openai.com/v1 (官方)"
+    return templates.TemplateResponse(
+        request,
+        "partials/_settings_test.html",
+        _ctx(
+            request,
+            test_ok=False,
+            test_message=(
+                "连接失败（3 次重试均失败）。请检查：API Key 是否正确、Base URL 是否可达、"
+                "模型名是否被该服务商支持。详细错误见服务端日志。"
+            ),
+            test_endpoint=endpoint,
+            test_model=model,
+        ),
+    )
 
 
 def _load_db_settings() -> dict[str, str]:

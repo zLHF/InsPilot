@@ -13,6 +13,18 @@
 </div>
 {% endif %}
 
+{% if error %}
+<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:16px;margin-bottom:20px;">
+  <div style="display:flex;align-items:flex-start;gap:10px;">
+    <span style="font-size:22px;">❌</span>
+    <div>
+      <h4 style="font-size:14px;font-weight:600;color:#991b1b;margin-bottom:4px;">保存失败</h4>
+      <p style="font-size:13px;color:#991b1b;margin:0;white-space:pre-wrap;">{{ error }}</p>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="guide-box">
   <h3>💡 配置说明</h3>
   <ul>
@@ -117,5 +129,23 @@
     <a href="/admin/settings" class="btn btn-outline">取消</a>
   </div>
 </form>
+
+<!-- 连接测试（用当前已保存的配置，需先点上方「保存」再测试） -->
+<div class="card" style="margin-top:16px;">
+  <div class="card-header"><span>🔌 连接测试</span></div>
+  <p class="text-sm text-muted mb-2">
+    用<strong>当前已保存</strong>的配置发起一次真实 embedding 请求，验证 API Key / Base URL / 模型是否可用。
+    修改配置后请先点上方「保存设置」，再点此按钮。
+  </p>
+  <button type="button" class="btn btn-outline" id="test-btn"
+          hx-post="/admin/settings/test"
+          hx-target="#settings-test-area"
+          hx-swap="innerHTML"
+          hx-indicator="#test-spinner">
+    <span class="htmx-hide-on-request">🧪 测试连接</span>
+    <span id="test-spinner" class="htmx-indicator">⏳ 测试中…</span>
+  </button>
+  <div id="settings-test-area" style="margin-top:12px;"></div>
+</div>
 
 {% endblock %}
