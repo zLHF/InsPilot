@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -19,23 +18,21 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 # Alpha default user — replace with real auth when available
 _DEFAULT_USER = CurrentUser(user_id="alpha", is_company_user=True, project_ids=set())
 
-# Keywords that suggest the user wants live production-data (NL2SQL) not doc RAG
-_PROD_DB_KEYWORDS = re.compile(
-    r"订单号|保单号|出函|实时|当前状态|查一下|查询订单|订单状态|"
-    r"最近.*订单|今天.*出单|出单.*多少|保费.*多少|费率.*多少|"
-    r"查询.*机构|机构.*对应|网点|集成商|担保.*有限公司|"
-    r"上线|统计|汇总|总数|占比|分布|对比|排名|排行",
-    re.IGNORECASE,
-)
-# Pattern that looks like an order/policy number (alphanumeric, length >= 10)
-_ORDER_ID_RE = re.compile(r"\b[A-Za-z0-9]{10,}\b")
-# Multiple company/institution names in one query → batch lookup → prod DB
-_MULTI_COMPANY_RE = re.compile(r"(有限公司|担保|保险|经纪).*(有限公司|担保|保险|经纪)")
-
 # Max chars of each retrieved plan fed to the LLM. Plans are 8K-12K chars;
 # 6000 covers the key sections (话术/单证说明/费率/保额/收款/退保) while
 # keeping total prompt bounded (~48K chars for 8 plans ≈ 24K tokens).
 _CONTEXT_MAX_CHARS = 6000
+
+# LLM-based routing prompt — lets the model decide which data source to use
+_ROUTE_PROMPT = (
+    "你是一个路由判断助手。根据用户的问题，判断应该用哪个数据源来回答。只回复一个词，不要加其他内容。\n\n"
+    "数据源说明：\n"
+    "- prod_db：生产数据库。用于查询实时业务数据，如订单详情、保费统计、机构网点、出单情况、实时费率、保单状态等。"
+    "当用户给出订单号/保单号、问具体某笔交易、查统计/排名/汇总、列多个机构名称时用这个。\n"
+    "- document_kb：方案知识库。用于查询方案文档内容，如某个地区/保司的方案说明、退保流程、话术模板、"
+    "客户端配置、单证说明、CA签章配置、出单模式说明等前期接入文档。\n\n"
+    "只回复 prod_db 或 document_kb。"
+)
 
 
 class HistoryMessage(BaseModel):
@@ -95,25 +92,36 @@ def _build_context(results) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def _should_route_to_prod_db(query: str) -> bool:
-    """Decide whether a query should go to the production DB (NL2SQL) vs RAG."""
-    # Strong signal: an order/policy number in the query
-    if _ORDER_ID_RE.search(query) and any(kw in query for kw in ("订单", "保单", "查", "状态")):
-        return True
-    # Multiple company names → batch lookup → prod DB
-    if _MULTI_COMPANY_RE.search(query):
-        return True
-    # Keyword-based signals
-    if _PROD_DB_KEYWORDS.search(query):
-        return True
-    return False
+def _route_via_llm(query: str) -> str:
+    """Ask the LLM which data source to use. Returns 'prod_db' or 'document_kb'.
+
+    Falls back to 'document_kb' if LLM unavailable or call fails — RAG is the
+    safe default since it never makes live DB calls.
+    """
+    chat_svc = get_chat_service()
+    if not chat_svc.available:
+        return "document_kb"
+    reply = chat_svc.chat(
+        [
+            {"role": "system", "content": _ROUTE_PROMPT},
+            {"role": "user", "content": query},
+        ],
+        temperature=0.0,
+    )
+    if reply:
+        reply = reply.strip().lower()
+        if "prod" in reply or "db" in reply or "数据库" in reply:
+            return "prod_db"
+    return "document_kb"
 
 
 @router.post("/query", response_model=ChatQueryResponse)
 def query_chat(request: ChatQueryRequest) -> ChatQueryResponse:
-    # Smart routing: production-data questions → NL2SQL, else → doc RAG
-    if _should_route_to_prod_db(request.query):
-        from inspilot_cloud_baby.prod_db_service import get_prod_db_service
+    # LLM-based routing: let the model decide which data source fits best
+    from inspilot_cloud_baby.prod_db_service import get_prod_db_service
+
+    route = _route_via_llm(request.query)
+    if route == "prod_db":
         db_svc = get_prod_db_service()
         if db_svc.available:
             return _answer_via_prod_db(request)
