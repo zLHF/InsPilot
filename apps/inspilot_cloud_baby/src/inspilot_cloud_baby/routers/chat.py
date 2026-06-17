@@ -23,17 +23,6 @@ _DEFAULT_USER = CurrentUser(user_id="alpha", is_company_user=True, project_ids=s
 # keeping total prompt bounded (~48K chars for 8 plans ≈ 24K tokens).
 _CONTEXT_MAX_CHARS = 6000
 
-# LLM-based routing prompt — lets the model decide which data source to use
-_ROUTE_PROMPT = (
-    "你是一个路由判断助手。根据用户的问题，判断应该用哪个数据源来回答。只回复一个词，不要加其他内容。\n\n"
-    "数据源说明：\n"
-    "- prod_db：生产数据库。用于查询实时业务数据，如订单详情、保费统计、机构网点、出单情况、实时费率、保单状态等。"
-    "当用户给出订单号/保单号、问具体某笔交易、查统计/排名/汇总、列多个机构名称时用这个。\n"
-    "- document_kb：方案知识库。用于查询方案文档内容，如某个地区/保司的方案说明、退保流程、话术模板、"
-    "客户端配置、单证说明、CA签章配置、出单模式说明等前期接入文档。\n\n"
-    "只回复 prod_db 或 document_kb。"
-)
-
 
 class HistoryMessage(BaseModel):
     role: str  # "user" or "assistant"
@@ -67,13 +56,22 @@ class ChatQueryResponse(BaseModel):
     llm_used: bool = False
 
 
-_SYSTEM_PROMPT = (
-    "你是 InsPilot 云小宝的知识助手，专门帮助保险业务人员解答方案相关问题。\n"
-    "请基于下面提供的知识库内容回答用户问题。要求：\n"
-    "1. 回答要准确、具体，直接引用知识库中的关键信息。\n"
-    "2. 如果涉及多个方案，用列表或对比表格清晰呈现。\n"
-    "3. 如果知识库中没有相关信息，如实说明'知识库中暂无相关内容'，不要编造。\n"
-    "4. 回答用中文，使用 Markdown 格式（标题、列表、表格等）。"
+# ---------------------------------------------------------------------------
+# System prompt for the final cross-referenced answer
+# ---------------------------------------------------------------------------
+
+_FINAL_PROMPT = (
+    "你是 InsPilot 云小宝的知识助手，专门帮助保险业务人员解答方案相关问题。\n\n"
+    "你将收到来自两个数据源的信息：\n"
+    "1. **方案知识库**：项目接入或变更初期的方案文档（可能含过时信息）。\n"
+    "2. **生产数据库**：实际运行中的最新业务数据（最准确、最实时）。\n\n"
+    "回答规则：\n"
+    "1. **以生产数据库为准**——当两个来源有冲突时，生产库的数据是正确的。\n"
+    "2. 综合两个来源的信息，给出完整、准确的回答。\n"
+    "3. 如果涉及多个条目，用列表或对比表格清晰呈现。\n"
+    "4. 某个来源没有相关信息时，基于另一个来源回答即可。\n"
+    "5. 如果两个来源都没有相关信息，如实说明，不要编造。\n"
+    "6. 回答用中文，使用 Markdown 格式。"
 )
 
 
@@ -92,40 +90,75 @@ def _build_context(results) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def _route_via_llm(query: str) -> str:
-    """Ask the LLM which data source to use. Returns 'prod_db' or 'document_kb'.
+def _fetch_doc_kb(query: str, filters: dict | None) -> tuple[list, str]:
+    """Query the document knowledge base (RAG). Returns (docs, context_text)."""
+    db: Session = SessionLocal()
+    try:
+        results = retrieve_documents(
+            query=query,
+            user=_DEFAULT_USER,
+            documents=[],
+            limit=8,
+            db=db,
+            filters=filters,
+        )
+    finally:
+        db.close()
 
-    Falls back to 'document_kb' if LLM unavailable or call fails — RAG is the
-    safe default since it never makes live DB calls.
-    """
+    if not results:
+        return [], ""
+    return results, _build_context(results)
+
+
+def _fetch_prod_db(query: str) -> tuple[str, str, int]:
+    """Query the production DB (NL2SQL). Returns (sql, result_text, row_count)."""
+    from inspilot_cloud_baby.prod_db_service import get_prod_db_service
+    from inspilot_cloud_baby.routers.query import _SCHEMA_SUMMARY, _extract_sql
+    import json
+
+    db_svc = get_prod_db_service()
+    if not db_svc.available:
+        return "", "", 0
+
     chat_svc = get_chat_service()
     if not chat_svc.available:
-        return "document_kb"
-    reply = chat_svc.chat(
-        [
-            {"role": "system", "content": _ROUTE_PROMPT},
-            {"role": "user", "content": query},
-        ],
+        return "", "", 0
+
+    # Step 1: LLM generates SQL
+    sql_system = (
+        "你是一个 SQL 生成助手。根据用户的问题和下面的数据库表结构，生成一条 SQL Server (T-SQL) 查询语句。\n"
+        "规则：\n"
+        "1. 只能生成 SELECT 语句。\n"
+        "2. 查询结果不要超过 100 行（用 TOP 100）。\n"
+        "3. 只返回 SQL 语句本身，不要加任何解释或 markdown 标记。\n"
+        "4. 用中文列名做别名（AS）方便阅读。\n\n"
+        + _SCHEMA_SUMMARY
+    )
+    sql_raw = chat_svc.chat(
+        [{"role": "system", "content": sql_system}, {"role": "user", "content": query}],
         temperature=0.0,
     )
-    if reply:
-        reply = reply.strip().lower()
-        if "prod" in reply or "db" in reply or "数据库" in reply:
-            return "prod_db"
-    return "document_kb"
+    if not sql_raw:
+        return "", "", 0
+
+    sql = _extract_sql(sql_raw)
+
+    # Step 2: Execute
+    try:
+        rows = db_svc.execute_query(sql)
+    except (ValueError, Exception) as exc:  # noqa: BLE001
+        logger.warning("Prod DB query failed: %s", exc)
+        return sql, "", 0
+
+    if not rows:
+        return sql, "（查询结果为空）", 0
+
+    compact = [{k: (str(v)[:80] if v is not None else "") for k, v in r.items()} for r in rows[:20]]
+    return sql, json.dumps(compact, ensure_ascii=False, default=str), len(rows)
 
 
 @router.post("/query", response_model=ChatQueryResponse)
 def query_chat(request: ChatQueryRequest) -> ChatQueryResponse:
-    # LLM-based routing: let the model decide which data source fits best
-    from inspilot_cloud_baby.prod_db_service import get_prod_db_service
-
-    route = _route_via_llm(request.query)
-    if route == "prod_db":
-        db_svc = get_prod_db_service()
-        if db_svc.available:
-            return _answer_via_prod_db(request)
-
     # Build manual filters from request (only non-empty values)
     manual_filters: dict | None = None
     manual = {
@@ -136,19 +169,11 @@ def query_chat(request: ChatQueryRequest) -> ChatQueryResponse:
     if any(manual.values()):
         manual_filters = {k: v for k, v in manual.items() if v}
 
-    db: Session = SessionLocal()
-    try:
-        results = retrieve_documents(
-            query=request.query,
-            user=_DEFAULT_USER,
-            documents=[],
-            limit=8,
-            db=db,
-            filters=manual_filters,
-        )
-    finally:
-        db.close()
+    # === Dual-source fetch: query BOTH data sources ===
+    doc_results, doc_context = _fetch_doc_kb(request.query, manual_filters)
+    prod_sql, prod_result, prod_rows = _fetch_prod_db(request.query)
 
+    # Build source list from doc KB (for the citation cards)
     sources = [
         SourceItem(
             id=doc.id,
@@ -159,25 +184,33 @@ def query_chat(request: ChatQueryRequest) -> ChatQueryResponse:
             integrator=doc.metadata.get("integrator", ""),
             doc_date=doc.metadata.get("doc_date", ""),
         )
-        for doc in results
+        for doc in doc_results
     ]
 
-    if not results:
+    total_count = len(doc_results) + prod_rows
+
+    # Both sources empty?
+    if not doc_results and prod_rows == 0:
         return ChatQueryResponse(
-            answer=f"未找到与「{request.query}」相关的知识条目。换个关键词或去掉筛选条件试试？",
+            answer=f"未找到与「{request.query}」相关的信息（方案知识库和生产数据库均无匹配）。",
             sources=[],
             count=0,
             llm_used=False,
         )
 
-    # --- RAG: ask the LLM to answer based on retrieved context ---
+    # === Cross-reference: feed both sources to LLM for a unified answer ===
     chat_svc = get_chat_service()
     if chat_svc.available:
-        context = _build_context(results)
+        sections = []
+        if doc_context:
+            sections.append(f"## 方案知识库（{len(doc_results)} 条相关方案）\n\n{doc_context}")
+        if prod_result:
+            sections.append(f"## 生产数据库（实时数据，{prod_rows} 行）\n\n查询结果：\n```json\n{prod_result}\n```")
+        combined_context = "\n\n---\n\n".join(sections)
+
         messages: list[dict] = [
-            {"role": "system", "content": _SYSTEM_PROMPT + "\n\n## 知识库内容\n\n" + context},
+            {"role": "system", "content": _FINAL_PROMPT + "\n\n" + combined_context},
         ]
-        # Carry prior turns (cap at last 6 messages to bound tokens)
         for msg in request.history[-6:]:
             if msg.role in ("user", "assistant"):
                 messages.append({"role": msg.role, "content": msg.content})
@@ -185,31 +218,27 @@ def query_chat(request: ChatQueryRequest) -> ChatQueryResponse:
 
         answer = chat_svc.chat(messages)
         if answer:
-            return ChatQueryResponse(answer=answer, sources=sources, count=len(results), llm_used=True)
-        # LLM call failed → fall through to degraded answer
+            # Append SQL detail if prod DB was used
+            sql_block = ""
+            if prod_sql:
+                sql_block = f"\n\n<details><summary>📄 生产库 SQL（{prod_rows} 行）</summary>\n\n```sql\n{prod_sql}\n```\n\n</details>"
+            return ChatQueryResponse(
+                answer=answer + sql_block,
+                sources=sources,
+                count=total_count,
+                llm_used=True,
+            )
         logger.warning("LLM call failed, returning degraded answer")
 
-    # Degraded: no LLM configured or call failed
-    titles = "\n".join(f"- {s.title}" for s in sources[:8])
+    # Degraded: no LLM — return what we have as text
+    parts = []
+    if doc_results:
+        parts.append("**方案知识库：**\n" + "\n".join(f"- {s.title}" for s in sources[:8]))
+    if prod_result:
+        parts.append(f"**生产数据库（{prod_rows} 行）：**\n```json\n{prod_result[:1000]}\n```")
     return ChatQueryResponse(
-        answer=f"找到 {len(results)} 条相关知识（对话模型未配置或调用失败，仅返回标题列表）：\n\n{titles}",
+        answer="\n\n".join(parts) or "（无数据）",
         sources=sources,
-        count=len(results),
+        count=total_count,
         llm_used=False,
-    )
-
-
-def _answer_via_prod_db(request: ChatQueryRequest) -> ChatQueryResponse:
-    """Route a production-data question through NL2SQL and return a chat response."""
-    from inspilot_cloud_baby.routers.query import query_sql, QueryRequest
-
-    result = query_sql(QueryRequest(query=request.query, history=[h.model_dump() for h in request.history]))
-    sql_block = ""
-    if result.sql:
-        sql_block = f"\n\n<details><summary>📄 生成的 SQL（{result.row_count} 行）</summary>\n\n```sql\n{result.sql}\n```\n\n</details>"
-    return ChatQueryResponse(
-        answer=result.answer + sql_block,
-        sources=[],
-        count=result.row_count,
-        llm_used=result.success,
     )
