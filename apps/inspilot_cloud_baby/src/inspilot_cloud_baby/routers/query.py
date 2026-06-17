@@ -60,16 +60,19 @@ _SCHEMA_SUMMARY = """\
 - fBidTime (datetime, 开标时间)
 - cTenderCompanyName (nvarchar, 招标单位名称)
 
-### T_PRC_Info — 平台/中心表
+### T_PRC_Info — 平台/中心表（即"上线网点"）
 - id (int, 主键)
 - Prc_Code (varchar, 平台编码)
-- Prc_Name (nvarchar, 平台名称)
+- Prc_Name (nvarchar, 平台名称/网点名称，如'温州公共资源交易中心')
+- Prc_FullName (nvarchar, 平台全称)
 - cCity (nvarchar, 城市)
 - cSheng/cShi/cQu (nvarchar, 省市区)
 - fSupportMode (tinyint, 出单模式: 0线上 1线下 2独立 3地推 4担保小程序)
 - fState (tinyint, 状态: 0待上线 1启用 2下线)
 - cInsuranceName (nvarchar, 保司名)
 - fClientMode (tinyint, 客户端模式)
+- cType_Mode (nvarchar, 单证模板编码，如 MB008/MS0029)
+- cTechSupport (nvarchar, 技术支持信息，含备案号和客服电话，非集成商)
 - cRemarks (nvarchar, 备注)
 
 ### T_PProduct_InsuranceInfo — 保险公司/担保机构表
@@ -80,16 +83,19 @@ _SCHEMA_SUMMARY = """\
 ## 关键表关系
 - T_Guarantee_Info.fProjectID → T_Guarantee_Project.ID
 - T_Guarantee_BidInfo.fGuaranteeID → T_Guarantee_Info.ID
-- T_Guarantee_Info.platformcode → T_PRC_Info.Prc_Code
+- T_Guarantee_Info.platformcode → T_PRC_Info.Prc_Code (通过这个关联查上线网点)
 - T_Guarantee_Info.cInsuranceCompany → T_PProduct_InsuranceInfo.cInsuranceName (机构简称)
-- T_PProduct_InsuranceInfo.cInsuranceFullName 存全称，用户可能用全称或简称查询
+
+## 重要说明
+- **集成商/单证格式**：生产库中没有"集成商"字段（如'新点'/'筑龙'），这类信息在方案知识库里，不要尝试从生产库查集成商。
+- **生产库能查的**：上线网点（T_PRC_Info.Prc_Name）、订单数据（费率/保费/状态）、机构关联的平台。
+- **查某机构的上线网点**：先从 T_PProduct_InsuranceInfo 按全称/简称找到机构，再 JOIN T_Guarantee_Info（cInsuranceCompany=机构简称）→ JOIN T_PRC_Info（platformcode=Prc_Code），SELECT 机构简称 + 平台名称。
 
 ## 查询提示
-- 用户给出的"XXX融资担保有限公司"等全称，可用 T_PProduct_InsuranceInfo.cInsuranceFullName 模糊匹配，
-  再 JOIN T_Guarantee_Info.cInsuranceCompany 查订单数据。
-- 多个机构批量查询时，用 IN 或 OR LIKE 一次查出。
+- 用户给出的"XXX融资担保有限公司"等全称，用 T_PProduct_InsuranceInfo.cInsuranceFullName LIKE '%关键词%' 模糊匹配。
+- 多个机构批量查询：把每个机构名拆成关键词，用多个 LIKE OR 连接。
+- **结果必须包含机构名称列**（ins.cInsuranceName 或 ins.cInsuranceFullName），否则无法区分哪行属于哪家机构。
 - 费率在 T_Guarantee_Info.fRate，保费在 T_Guarantee_Info.fPremium。
-- 平台/网点在 T_PRC_Info，通过 platformcode 关联。
 """
 
 _SQL_SYSTEM_PROMPT = (
