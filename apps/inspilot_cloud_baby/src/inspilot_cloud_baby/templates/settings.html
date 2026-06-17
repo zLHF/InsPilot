@@ -86,6 +86,41 @@
 <form method="POST" action="/admin/settings">
   <div class="card">
     <div class="card-header">
+      <span>🔗 钉钉开放平台配置 <small style="font-weight:normal;color:#94a3b8;">（审批导入用）</small></span>
+    </div>
+    <div class="text-sm text-muted mb-2">
+      配置企业内部应用 AppKey/AppSecret 后，可在「钉钉审批导入」页面测试连接并导入真实审批实例。
+      {% if dingtalk_available %}<span class="badge badge-green">✓ 已配置</span>{% else %}<span class="badge badge-gray">未配置</span>{% endif %}
+      {% if dingtalk_key_source == 'env' %}
+        <span class="badge badge-blue">环境变量</span>
+      {% elif dingtalk_key_source == 'db' %}
+        <span class="badge badge-purple">数据库</span>
+      {% endif %}
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label for="dingtalk_app_key">AppKey</label>
+        <input type="text" id="dingtalk_app_key" name="dingtalk_app_key"
+               placeholder="{{ dingtalk_key_hint }}" autocomplete="off">
+        <div class="text-sm text-muted mt-2">留空 = 保持当前值不变；环境变量优先于数据库配置。</div>
+      </div>
+      <div class="form-group">
+        <label for="dingtalk_app_secret">AppSecret</label>
+        <input type="password" id="dingtalk_app_secret" name="dingtalk_app_secret"
+               placeholder="留空 = 保持当前值" autocomplete="off">
+        <div class="text-sm text-muted mt-2">用于获取企业级 access_token，请勿使用个人凭据。</div>
+      </div>
+    </div>
+
+    <button type="button" class="btn btn-outline btn-sm" onclick="testDingTalk()">
+      🧪 测试此配置
+    </button>
+    <div id="test-dingtalk" class="test-result"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
       <span>🔑 OpenAI Embedding 配置</span>
     </div>
 
@@ -266,6 +301,24 @@ async function testDB(){
     const res = await fetch('/admin/settings/db-test', {
       method:'POST',
       headers:{'Content-Type':'application/json', 'X-Test-Body': JSON.stringify({host,port,database,user,password})},
+      body:'{}'
+    });
+    area.innerHTML = await res.text();
+  }catch(e){
+    area.innerHTML = '<div style="color:#dc2626;font-size:13px;">❌ 请求失败：'+e.message+'</div>';
+  }
+}
+
+async function testDingTalk(){
+  const appKey = document.getElementById('dingtalk_app_key').value.trim();
+  const appSecret = document.getElementById('dingtalk_app_secret').value.trim();
+  const area = document.getElementById('test-dingtalk');
+
+  area.innerHTML = '<span class="text-sm text-muted">⏳ 测试中…</span>';
+  try{
+    const res = await fetch('/admin/settings/dingtalk-test', {
+      method:'POST',
+      headers:{'Content-Type':'application/json', 'X-Test-Body': JSON.stringify({app_key:appKey, app_secret:appSecret})},
       body:'{}'
     });
     area.innerHTML = await res.text();

@@ -7,7 +7,28 @@
     </div>
     {% endif %}
   </td>
-  <td>{{ project_name or '—' }}</td>
+  <td>
+    <form hx-put="/admin/knowledge/{{ item.id }}/visibility"
+          hx-target="#knowledge-row-{{ item.id }}"
+          hx-swap="outerHTML"
+          style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
+      <select name="project_id" style="min-width:120px; max-width:180px; font-size:12px; padding:4px 6px;">
+        <option value="">{{ project_options_label }}</option>
+        {% for p in projects %}
+        <option value="{{ p.id }}" {{ 'selected' if item.project_id and item.project_id|string == p.id|string else '' }}>
+          {{ p.name }}
+        </option>
+        {% endfor %}
+      </select>
+      <select name="sensitivity" style="min-width:96px; font-size:12px; padding:4px 6px;">
+        <option value="public_summary" {{ 'selected' if item.sensitivity.value == 'public_summary' else '' }}>公开摘要</option>
+        <option value="project_restricted" {{ 'selected' if item.sensitivity.value == 'project_restricted' else '' }}>项目受限</option>
+        <option value="sensitive" {{ 'selected' if item.sensitivity.value == 'sensitive' else '' }}>敏感</option>
+      </select>
+      <button type="submit" class="btn btn-outline btn-xs">保存</button>
+    </form>
+    <div class="text-muted text-sm mt-2">{{ project_name or '未指定项目' }}</div>
+  </td>
   <td>
     <span class="badge badge-blue">
       {{ material_type_labels.get(item.source_type, item.source_type) }}

@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, func, select
+from sqlalchemy import String, func, or_, select
 
 from inspilot_cloud_baby.auth import CurrentUser
 from inspilot_cloud_baby.models import (
@@ -63,6 +63,15 @@ def retrieve_documents(
     if filters is None and db is not None:
         filters = _extract_query_filters(query=query, db=db)
 
+    keyword_results: list[KnowledgeDocument] = []
+    if db is not None:
+        try:
+            keyword_results = _retrieve_by_db_keyword(query=query, user=user, db=db, limit=limit)
+            if len(keyword_results) >= limit:
+                return keyword_results[:limit]
+        except Exception:
+            logger.warning("DB keyword search failed, continuing with vector search", exc_info=True)
+
     # --- try vector search first ---
     if db is not None:
         try:
@@ -70,12 +79,13 @@ def retrieve_documents(
                 query=query, user=user, db=db, limit=limit, filters=filters
             )
             if vector_results:
-                return vector_results
+                return _merge_documents(keyword_results, vector_results, limit)
         except Exception:
             logger.warning("Vector search failed, falling back to keyword search", exc_info=True)
 
     # --- keyword fallback (original logic) ---
-    return _retrieve_by_keyword(query=query, user=user, documents=documents, limit=limit)
+    fallback_results = _retrieve_by_keyword(query=query, user=user, documents=documents, limit=limit)
+    return _merge_documents(keyword_results, fallback_results, limit)
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +101,12 @@ _INTEGRATORS = [
     "新点", "筑龙", "品茗", "广联达", "政采云", "文锐", "数科", "杰软",
     "杰瑞", "中招", "建网", "移动", "迅捷", "金控", "乐彩云",
 ]
+_NON_REGION_KEYWORDS = (
+    "担保", "保险", "保单", "支付", "收银", "页面", "详情", "弹窗", "按钮",
+    "机构", "公司", "平台", "项目", "产品", "技术", "方案", "流程", "订单",
+)
+_ORG_QUERY_KEYWORDS = ("担保", "公司", "机构", "经纪", "融资", "科技")
+_REGION_SUFFIXES = ("省", "市", "县", "区", "州", "盟", "旗", "岛")
 
 
 def _load_known_regions(db: Session) -> list[str]:
@@ -104,6 +120,18 @@ def _load_known_regions(db: Session) -> list[str]:
     except Exception:
         logger.debug("Failed to load known regions", exc_info=True)
         return []
+
+
+def _looks_like_region(value: str) -> bool:
+    """Reject polluted metadata values that are business/function words, not places."""
+    value = value.strip()
+    if not value or any(keyword in value for keyword in _NON_REGION_KEYWORDS):
+        return False
+    if value in _PROVINCE_CITIES:
+        return True
+    if any(value == city for cities in _PROVINCE_CITIES.values() for city in cities):
+        return True
+    return value.endswith(_REGION_SUFFIXES)
 
 
 def _extract_query_filters(*, query: str, db: Session) -> dict:
@@ -131,6 +159,8 @@ def _extract_query_filters(*, query: str, db: Session) -> dict:
     # (direct substring). Longest-first avoids e.g. "杭州" winning over
     # "杭州市". Handles parent→child (衢州→衢州市) via SQL prefix matching.
     for region in _load_known_regions(db):
+        if not _looks_like_region(region):
+            continue
         if region and region in query:
             filters["region"] = region
             break
@@ -138,7 +168,7 @@ def _extract_query_filters(*, query: str, db: Session) -> dict:
     # Province expansion: if the query mentions a known province name (e.g.
     # "四川省" / "浙江") but no specific city was matched above, set the
     # region to the province so _build_region_clause expands it to its cities.
-    if "region" not in filters:
+    if "region" not in filters and not any(keyword in query for keyword in _ORG_QUERY_KEYWORDS):
         for prov in _PROVINCE_CITIES:
             if prov in query:
                 filters["region"] = prov
@@ -172,6 +202,80 @@ def _retrieve_by_keyword(
     ]
     scored = sorted(
         visible_docs,
+        key=lambda document: _score(document=document, terms=terms),
+        reverse=True,
+    )
+    return scored[:limit]
+
+
+def _query_terms(query: str) -> list[str]:
+    return [term.strip() for term in query.split() if term.strip()]
+
+
+def _merge_documents(
+    first: list[KnowledgeDocument],
+    second: list[KnowledgeDocument],
+    limit: int,
+) -> list[KnowledgeDocument]:
+    merged: list[KnowledgeDocument] = []
+    seen: set[str] = set()
+    for doc in [*first, *second]:
+        if doc.id in seen:
+            continue
+        seen.add(doc.id)
+        merged.append(doc)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def _retrieve_by_db_keyword(
+    *,
+    query: str,
+    user: CurrentUser,
+    db: Session,
+    limit: int,
+) -> list[KnowledgeDocument]:
+    terms = _query_terms(query)
+    if not terms:
+        return []
+
+    clauses = []
+    for term in terms:
+        pattern = f"%{term}%"
+        clauses.append(KnowledgeItem.title.ilike(pattern))
+        clauses.append(KnowledgeItem.body.ilike(pattern))
+
+    rows = db.execute(
+        select(KnowledgeItem, Project.visibility)
+        .join(Project, KnowledgeItem.project_id == Project.id, isouter=True)
+        .where(KnowledgeItem.status == KnowledgeStatus.ACTIVE)
+        .where(or_(*clauses))
+        .limit(limit * 5)
+    ).all()
+
+    documents: list[KnowledgeDocument] = []
+    for item, visibility in rows:
+        doc = KnowledgeDocument(
+            id=str(item.id),
+            project_id=str(item.project_id) if item.project_id else None,
+            project_visibility=visibility,
+            sensitivity=item.sensitivity,
+            title=item.title,
+            body=item.body,
+            source_type=item.source_type or "",
+            metadata=item.metadata_json or {},
+        )
+        if can_read_knowledge(
+            user=user,
+            project_id=doc.project_id,
+            project_visibility=doc.project_visibility,
+            sensitivity=doc.sensitivity,
+        ):
+            documents.append(doc)
+
+    scored = sorted(
+        documents,
         key=lambda document: _score(document=document, terms=terms),
         reverse=True,
     )

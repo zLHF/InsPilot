@@ -272,10 +272,11 @@ class DingTalkAdminClient:
         """Parse raw process_instance into AdminWorkflowDetail."""
         form_data: dict[str, str] = {}
         attachments: list[AdminAttachment] = []
-        for fv in raw.get("formComponentValues", []):
+        form_values = raw.get("formComponentValues") or raw.get("form_component_values") or []
+        for fv in form_values:
             name = fv.get("name", "")
-            value = fv.get("value", "")
-            ctype = fv.get("componentType", "")
+            value = str(fv.get("value", "") or "")
+            ctype = fv.get("componentType", "") or fv.get("component_type", "")
             if not name:
                 continue
             # Attachment / image fields
@@ -283,7 +284,7 @@ class DingTalkAdminClient:
                 attachments.extend(
                     self._parse_form_attachments(name, ctype or "DDAttachment", value)
                 )
-            elif value:
+            elif value and value != "null":
                 if value.startswith("[") and value.endswith("]"):
                     try:
                         parsed = json.loads(value)

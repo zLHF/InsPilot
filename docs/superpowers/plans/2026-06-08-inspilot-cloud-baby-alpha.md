@@ -809,9 +809,11 @@ git add apps/inspilot_cloud_baby
 git commit -m "feat: add alpha attachment storage"
 ```
 
-### Task 6：实现 DWS 钉钉流程导入 PoC Adapter
+### Task 6：实现 DWS 钉钉流程导入 PoC Adapter（历史设计记录，已被钉钉开放平台 API 实现替代）
 
-**目标：** 封装 DWS CLI，支持按流程 ID 获取表单字段、评论、附件元数据。
+**目标（历史）：** 封装 DWS CLI，支持按流程 ID 获取表单字段、评论、附件元数据。
+
+> **当前实现说明：** 本任务下方代码块保留为初始设计记录。实际代码已改为 `dingtalk_admin.py` 直接调用钉钉开放平台 API，`dws_adapter.py`、`routers/dws.py` 和外部 `dws` 二进制均已移除。后续执行者不要按本节 CLI 命令实现或验证。
 
 **文件：**
 
@@ -938,9 +940,9 @@ python -m pytest tests/test_dws_adapter.py -v
 
 期望：`2 passed`。
 
-- [x] **Step 5：人工验证 DWS 命令**
+- [x] **Step 5：人工验证 DWS 命令（历史设计记录，当前不再执行）**
 
-企业管理员授权后运行：
+历史设计曾要求企业管理员授权后运行：
 
 ```bash
 dws auth login
@@ -948,12 +950,12 @@ dws schema oa --format json
 dws oa process-instance get --instance-id "PROC-EXAMPLE-001" --format json
 ```
 
-期望：
+历史期望：
 
 - `dws auth login` 完成企业授权。
 - `dws schema oa --format json` 能列出 OA 相关命令。
 - 流程实例命令返回 JSON，包含表单字段、状态、评论或操作记录、附件元数据。
-- 如果实际命令和计划假设不同，以 `dws schema oa --format json` 为准，更新 `DwsAdapter.build_fetch_workflow_command()` 和测试。
+- 当前实现不再使用该路径；真实验证以 `/admin/dws/status`、`/admin/dws/preview`、`/admin/dws/import` 和 `dingtalk_admin.DingTalkAdminClient` 为准。
 
 - [x] **Step 6：提交**
 
@@ -1662,9 +1664,9 @@ python -m uvicorn inspilot_cloud_baby.main:app --reload --host 127.0.0.1 --port 
 - `http://127.0.0.1:8000/admin/ingest`
 - `http://127.0.0.1:8000/admin/dws`
 
-## DWS PoC
+## DWS PoC（历史设计记录，已被钉钉开放平台 API 实现替代）
 
-企业管理员授权后运行：
+历史设计曾要求企业管理员授权后运行：
 
 ```bash
 dws auth login
@@ -1672,7 +1674,7 @@ dws schema oa --format json
 dws oa process-instance get --instance-id "PROC-EXAMPLE-001" --format json
 ```
 
-实际 OA 命令必须以 `dws schema oa --format json` 返回结果为准。如果命令名或参数不同，更新 `inspilot_cloud_baby.dws_adapter.DwsAdapter` 和对应测试。
+当前实现不再使用外部 CLI。真实验证请配置企业内部应用 AppKey/AppSecret，然后访问 `/admin/dws/status`、`/admin/dws/preview`、`/admin/dws/import`。
 ````
 
 - [x] **Step 2：运行 lint**
@@ -1738,7 +1740,7 @@ PRD 覆盖关系：
 
 - V2.4 的项目开放与敏感分层：Task 2、Task 3、Task 7、Task 9。
 - 轻量知识投喂：Task 4、Task 5、Task 9、Task 10。
-- DWS 历史流程导入 PoC：Task 6、Task 10。
+- 钉钉历史流程导入 PoC：Task 6 的历史设计已被 `dingtalk_admin.py` 替代，实际入口在 Task 10 的后台页面。
 - 结构化输出：Task 8。
 - 最小后台页面：Task 10。
 
@@ -1751,5 +1753,5 @@ PRD 覆盖关系：
 
 主要风险：
 
-- DWS 的真实 OA 命令可能与计划中的命令名不同。执行时必须先跑 `dws schema oa --format json`，再调整 adapter 和测试。
+- 真实钉钉审批导入仍需企业授权和一个真实流程实例验证；不再依赖 DWS CLI 命令。
 - 当前仓库没有应用代码，所以 Task 1 从零创建 `apps/inspilot_cloud_baby`。

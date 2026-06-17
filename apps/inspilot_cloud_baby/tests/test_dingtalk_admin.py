@@ -78,6 +78,45 @@ def test_to_workflow_is_idempotent_on_empty_detail() -> None:
     assert doc.comments == []
 
 
+def test_parse_detail_accepts_dingtalk_snake_case_form_fields() -> None:
+    client = DingTalkAdminClient("key", "secret")
+    raw = {
+        "title": "王国通提交的项目评估申请+项目实施",
+        "status": "RUNNING",
+        "business_id": "202605281923000432811",
+        "originator_userid": "0649510929152648",
+        "form_component_values": [
+            {
+                "component_type": "TextField",
+                "name": "维格表RECORDID",
+                "value": "rech35DRMYFck",
+            },
+            {
+                "component_type": "DDSelectField",
+                "name": "产品类型（险种/产品）",
+                "value": "投标",
+            },
+            {
+                "component_type": "DDMultiSelectField",
+                "name": "业务平台所属省市",
+                "value": '["青海省","西宁市"]',
+            },
+            {
+                "component_type": "TextField",
+                "name": "空字段",
+                "value": "null",
+            },
+        ],
+    }
+
+    detail = client.parse_detail(raw)
+
+    assert detail.form_data["维格表RECORDID"] == "rech35DRMYFck"
+    assert detail.form_data["产品类型（险种/产品）"] == "投标"
+    assert detail.form_data["业务平台所属省市"] == "青海省, 西宁市"
+    assert "空字段" not in detail.form_data
+
+
 def test_test_connection_ok_when_token_refresh_succeeds() -> None:
     client = DingTalkAdminClient("key", "secret")
 

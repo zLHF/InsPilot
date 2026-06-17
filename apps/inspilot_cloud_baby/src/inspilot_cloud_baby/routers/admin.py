@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from inspilot_cloud_baby.config import settings
 from inspilot_cloud_baby.db import SessionLocal
-from inspilot_cloud_baby.dingtalk_admin import DingTalkAdminClient
+from inspilot_cloud_baby.dingtalk_admin import DingTalkAdminClient, WorkflowDoc
 from inspilot_cloud_baby.embedding import get_embedding_service
 from inspilot_cloud_baby.ingest.classifier import classify_material
 from inspilot_cloud_baby.models import (
@@ -72,6 +72,8 @@ STATUS_COLORS = {
     KnowledgeStatus.CONFLICT: "red",
 }
 
+PROJECT_OPTIONS_LABEL = "— 不指定项目 —"
+
 MATERIAL_TYPE_LABELS = {
     "rate_table": "费率表",
     "operation_guide": "操作指南",
@@ -97,15 +99,89 @@ def _ctx(request: Request, **extra: object) -> dict:
     return ctx
 
 
+def _knowledge_row_context(
+    request: Request,
+    *,
+    item: KnowledgeItem,
+    project_name: str = "",
+    projects: list[Project] | None = None,
+) -> dict:
+    return _ctx(
+        request,
+        item=item,
+        project_name=project_name,
+        projects=projects or [],
+        project_options_label=PROJECT_OPTIONS_LABEL,
+        status_labels=STATUS_LABELS,
+        status_colors=STATUS_COLORS,
+        sensitivity_labels=SENSITIVITY_LABELS,
+        material_type_labels=MATERIAL_TYPE_LABELS,
+    )
+
+
+def _format_operation_record(rec: dict) -> str:
+    user_id = rec.get("userid") or rec.get("userId") or rec.get("creatorUserId") or "未知"
+    op_type = rec.get("operation_type") or rec.get("operationType") or ""
+    result = rec.get("operation_result") or rec.get("operationResult") or rec.get("result", "")
+    remark = rec.get("remark", "")
+    date = rec.get("date_formatted") or rec.get("date", "")
+    parts = [str(v) for v in (date, user_id, op_type, result, remark) if v]
+    return " / ".join(parts) if parts else "未知"
+
+
+def _build_dingtalk_knowledge_body(workflow: WorkflowDoc) -> str:
+    body_parts = [f"# {workflow.title or workflow.process_instance_id}"]
+    if workflow.status:
+        body_parts.append(f"\n**审批状态**: {workflow.status}")
+    if workflow.originator:
+        body_parts.append(f"**发起人**: {workflow.originator}")
+
+    if workflow.form_data:
+        body_parts.append("\n## 表单字段")
+        for name, value in workflow.form_data.items():
+            body_parts.append(f"- **{name}**: {value}")
+
+    if workflow.operation_records:
+        body_parts.append("\n## 审批链条")
+        for rec in workflow.operation_records:
+            body_parts.append(f"- {_format_operation_record(rec)}")
+
+    if workflow.comments:
+        body_parts.append("\n## 评论")
+        for comment in workflow.comments:
+            body_parts.append(
+                f"- **{comment.get('user_id', '未知')}**"
+                f"{' @ ' + comment.get('timestamp', '') if comment.get('timestamp') else ''}: "
+                f"{comment.get('content', '')}"
+            )
+
+    if workflow.attachments:
+        body_parts.append("\n## 附件")
+        for att in workflow.attachments:
+            body_parts.append(f"- {att.get('file_name', att.get('field_name', '附件'))}")
+
+    return "\n".join(body_parts)
+
+
+def _get_dingtalk_config() -> dict[str, str]:
+    db_settings = _load_db_settings()
+    return {
+        "app_key": settings.dingtalk_app_key or db_settings.get("dingtalk_app_key", ""),
+        "app_secret": settings.dingtalk_app_secret or db_settings.get("dingtalk_app_secret", ""),
+    }
+
+
 def _has_admin_credentials() -> bool:
     """Check if enterprise admin credentials are configured."""
-    return bool(settings.dingtalk_app_key and settings.dingtalk_app_secret)
+    cfg = _get_dingtalk_config()
+    return bool(cfg["app_key"] and cfg["app_secret"])
 
 
 def _admin_client() -> DingTalkAdminClient | None:
     """Return a DingTalkAdminClient if credentials are configured."""
-    if _has_admin_credentials():
-        return DingTalkAdminClient(settings.dingtalk_app_key, settings.dingtalk_app_secret)
+    cfg = _get_dingtalk_config()
+    if cfg["app_key"] and cfg["app_secret"]:
+        return DingTalkAdminClient(cfg["app_key"], cfg["app_secret"])
     return None
 
 
@@ -229,6 +305,7 @@ def knowledge_page(
             status_colors=STATUS_COLORS,
             sensitivity_labels=SENSITIVITY_LABELS,
             material_type_labels=MATERIAL_TYPE_LABELS,
+            project_options_label=PROJECT_OPTIONS_LABEL,
         ),
     )
 
@@ -506,24 +583,53 @@ def knowledge_update_status(request: Request, item_id: str, status: str = Form(.
                 proj = session.get(Project, item.project_id)
                 if proj:
                     project_name = proj.name
-            return item, project_name
+            projects = list(session.scalars(select(Project).order_by(Project.name)).all())
+            return item, project_name, projects
 
     result = _db_query(_query)
     if not result:
         return templates.TemplateResponse(request, "partials/_empty.html", _ctx(request))
-    item, project_name = result
+    item, project_name, projects = result
     return templates.TemplateResponse(
         request,
         "partials/_knowledge_row.html",
-        _ctx(
-            request,
-            item=item,
-            project_name=project_name,
-            status_labels=STATUS_LABELS,
-            status_colors=STATUS_COLORS,
-            sensitivity_labels=SENSITIVITY_LABELS,
-            material_type_labels=MATERIAL_TYPE_LABELS,
-        ),
+        _knowledge_row_context(request, item=item, project_name=project_name, projects=projects),
+    )
+
+
+@router.put("/knowledge/{item_id}/visibility")
+def knowledge_update_visibility(
+    request: Request,
+    item_id: str,
+    project_id: str = Form(""),
+    sensitivity: str = Form(...),
+):
+    """Update knowledge item project assignment and sensitivity."""
+    def _query():
+        with SessionLocal() as session:
+            item = session.get(KnowledgeItem, uuid.UUID(item_id))
+            if not item:
+                return None
+            item.project_id = uuid.UUID(project_id) if project_id else None
+            item.sensitivity = KnowledgeSensitivity(sensitivity)
+            session.commit()
+
+            project_name = ""
+            if item.project_id:
+                proj = session.get(Project, item.project_id)
+                if proj:
+                    project_name = proj.name
+            projects = list(session.scalars(select(Project).order_by(Project.name)).all())
+            return item, project_name, projects
+
+    result = _db_query(_query)
+    if not result:
+        return templates.TemplateResponse(request, "partials/_empty.html", _ctx(request))
+    item, project_name, projects = result
+    return templates.TemplateResponse(
+        request,
+        "partials/_knowledge_row.html",
+        _knowledge_row_context(request, item=item, project_name=project_name, projects=projects),
     )
 
 
@@ -666,32 +772,7 @@ def dws_import(
         )
     workflow = DingTalkAdminClient.to_workflow(detail)
 
-    # Build the knowledge body from workflow data
-    body_parts = [f"# {workflow.title or title or workflow_id}"]
-    if workflow.status:
-        body_parts.append(f"\n**审批状态**: {workflow.status}")
-    if workflow.originator:
-        body_parts.append(f"**发起人**: {workflow.originator}")
-
-    if workflow.form_data:
-        body_parts.append("\n## 表单字段")
-        for name, value in workflow.form_data.items():
-            body_parts.append(f"- **{name}**: {value}")
-
-    if workflow.operation_records:
-        body_parts.append("\n## 操作记录")
-        for rec in workflow.operation_records:
-            body_parts.append(
-                f"- {rec.get('creatorUserId', rec.get('userId', '未知'))}: "
-                f"{rec.get('remark', rec.get('result', ''))}"
-            )
-
-    if workflow.attachments:
-        body_parts.append("\n## 附件")
-        for att in workflow.attachments:
-            body_parts.append(f"- {att.get('file_name', att.get('field_name', '附件'))}")
-
-    body = "\n".join(body_parts)
+    body = _build_dingtalk_knowledge_body(workflow)
 
     # Save to database
     item_id = None
@@ -808,37 +889,8 @@ def dws_batch_import(
 
     for detail in result.succeeded:
         try:
-            # Build markdown body
-            body_parts = [f"# {detail.title or detail.process_instance_id}"]
-            if detail.status:
-                body_parts.append(f"\n**审批状态**: {detail.status}")
-            if detail.originator_user_id:
-                body_parts.append(f"**发起人**: {detail.originator_user_id}")
-
-            if detail.form_data:
-                body_parts.append("\n## 表单字段")
-                for name, value in detail.form_data.items():
-                    body_parts.append(f"- **{name}**: {value}")
-
-            if detail.operation_records:
-                body_parts.append("\n## 操作记录")
-                for rec in detail.operation_records:
-                    body_parts.append(
-                        f"- {rec.get('creatorUserId', rec.get('userId', '未知'))}: "
-                        f"{rec.get('remark', rec.get('result', ''))}"
-                    )
-
-            if detail.comments:
-                body_parts.append("\n## 评论")
-                for c in detail.comments:
-                    body_parts.append(f"- **{c.user_id}**: {c.content}")
-
-            if detail.attachments:
-                body_parts.append("\n## 附件")
-                for a in detail.attachments:
-                    body_parts.append(f"- {a.file_name or a.field_name}")
-
-            body = "\n".join(body_parts)
+            workflow = DingTalkAdminClient.to_workflow(detail)
+            body = _build_dingtalk_knowledge_body(workflow)
 
             def _query(pid=detail.process_instance_id, b=body, t=detail.title, st=detail.status):
                 with SessionLocal() as session:
@@ -879,6 +931,8 @@ def dws_batch_import(
 # ---------------------------------------------------------------------------
 
 _SETTINGS_KEYS = [
+    "dingtalk_app_key",
+    "dingtalk_app_secret",
     "openai_api_key",
     "openai_base_url",
     "openai_embedding_model",
@@ -949,6 +1003,14 @@ def settings_page(request: Request, saved: str = ""):
     else:
         chat_key_source, chat_key_hint = "none", "未配置"
 
+    if settings.dingtalk_app_key:
+        dingtalk_key_source, dingtalk_key_hint = "env", "当前使用环境变量配置"
+    elif db_settings.get("dingtalk_app_key"):
+        dingtalk_key_source = "db"
+        dingtalk_key_hint = "****" + db_settings["dingtalk_app_key"][-4:]
+    else:
+        dingtalk_key_source, dingtalk_key_hint = "none", "未配置"
+
     return templates.TemplateResponse(
         request, "settings.html",
         _ctx(
@@ -967,6 +1029,12 @@ def settings_page(request: Request, saved: str = ""):
             chat_key_hint=chat_key_hint,
             chat_base_url=db_settings.get("chat_base_url", ""),
             chat_model=db_settings.get("chat_model", ""),
+            dingtalk_available=bool(
+                (settings.dingtalk_app_key or db_settings.get("dingtalk_app_key"))
+                and (settings.dingtalk_app_secret or db_settings.get("dingtalk_app_secret"))
+            ),
+            dingtalk_key_source=dingtalk_key_source,
+            dingtalk_key_hint=dingtalk_key_hint,
             prod_db_host=db_settings.get("prod_db_host", ""),
             prod_db_port=db_settings.get("prod_db_port", "1433"),
             prod_db_name=db_settings.get("prod_db_name", ""),
@@ -979,6 +1047,8 @@ def settings_page(request: Request, saved: str = ""):
 @router.post("/settings")
 def settings_save(
     request: Request,
+    dingtalk_app_key: str = Form(""),
+    dingtalk_app_secret: str = Form(""),
     openai_api_key: str = Form(""),
     openai_base_url: str = Form(""),
     openai_embedding_model: str = Form(""),
@@ -1000,6 +1070,10 @@ def settings_save(
 
     def _query():
         with SessionLocal() as session:
+            if dingtalk_app_key.strip():
+                _save_setting(session, "dingtalk_app_key", dingtalk_app_key.strip())
+            if dingtalk_app_secret.strip():
+                _save_setting(session, "dingtalk_app_secret", dingtalk_app_secret.strip())
             if openai_api_key.strip():
                 _save_setting(session, "openai_api_key", openai_api_key.strip())
             if openai_base_url.strip():
@@ -1081,6 +1155,13 @@ def _settings_ctx(request: Request, error: str = "") -> dict:
     else:
         chat_key_source, chat_key_hint = "none", "未配置"
 
+    if settings.dingtalk_app_key:
+        dingtalk_key_source, dingtalk_key_hint = "env", "当前使用环境变量配置"
+    elif db_settings.get("dingtalk_app_key"):
+        dingtalk_key_source, dingtalk_key_hint = "db", "****" + db_settings["dingtalk_app_key"][-4:]
+    else:
+        dingtalk_key_source, dingtalk_key_hint = "none", "未配置"
+
     return _ctx(
         request,
         saved=False,
@@ -1098,6 +1179,12 @@ def _settings_ctx(request: Request, error: str = "") -> dict:
         chat_key_hint=chat_key_hint,
         chat_base_url=db_settings.get("chat_base_url", ""),
         chat_model=db_settings.get("chat_model", ""),
+        dingtalk_available=bool(
+            (settings.dingtalk_app_key or db_settings.get("dingtalk_app_key"))
+            and (settings.dingtalk_app_secret or db_settings.get("dingtalk_app_secret"))
+        ),
+        dingtalk_key_source=dingtalk_key_source,
+        dingtalk_key_hint=dingtalk_key_hint,
         prod_db_host=db_settings.get("prod_db_host", ""),
         prod_db_port=db_settings.get("prod_db_port", "1433"),
         prod_db_name=db_settings.get("prod_db_name", ""),
@@ -1217,6 +1304,40 @@ def settings_chat_test(request: Request):
             test_endpoint=endpoint,
             test_model=model,
         ),
+    )
+
+
+@router.post("/settings/dingtalk-test")
+def settings_dingtalk_test(request: Request):
+    """Test DingTalk AppKey/AppSecret with CURRENT FORM values (pre-save)."""
+    import json
+
+    try:
+        body = json.loads(request.headers.get("x-test-body", "{}"))
+    except Exception:
+        body = {}
+    saved = _get_dingtalk_config()
+    app_key = body.get("app_key", "").strip() or saved["app_key"]
+    app_secret = body.get("app_secret", "").strip() or saved["app_secret"]
+
+    if not app_key or not app_secret:
+        return templates.TemplateResponse(
+            request,
+            "partials/_settings_test.html",
+            _ctx(request, test_ok=False, test_message="未配置钉钉 AppKey 或 AppSecret。请先填写。"),
+        )
+
+    ok, message = DingTalkAdminClient(app_key, app_secret).test_connection()
+    if ok:
+        return templates.TemplateResponse(
+            request,
+            "partials/_settings_test.html",
+            _ctx(request, test_ok=True, test_message="✅ 连接成功。钉钉 access_token 获取正常。"),
+        )
+    return templates.TemplateResponse(
+        request,
+        "partials/_settings_test.html",
+        _ctx(request, test_ok=False, test_message=f"❌ 连接失败：{message}"),
     )
 
 

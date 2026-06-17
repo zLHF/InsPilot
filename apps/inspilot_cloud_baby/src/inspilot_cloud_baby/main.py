@@ -1,4 +1,6 @@
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import sqlalchemy as sa
 from fastapi import FastAPI
@@ -14,19 +16,26 @@ from inspilot_cloud_baby.routers.query import router as query_router
 logger = logging.getLogger(__name__)
 
 
-def create_app() -> FastAPI:
-    app = FastAPI(title="InsPilot Cloud Baby Alpha")
+def _init_db() -> None:
+    """Auto-create all tables on startup (alpha / PoC convenience)."""
+    try:
+        with engine.begin() as conn:
+            conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database tables verified / created")
+    except Exception:
+        logger.warning("Could not create database tables", exc_info=True)
 
-    @app.on_event("startup")
-    def _init_db() -> None:
-        """Auto-create all tables on startup (alpha / PoC convenience)."""
-        try:
-            with engine.begin() as conn:
-                conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
-            Base.metadata.create_all(bind=engine)
-            logger.info("Database tables verified / created")
-        except Exception:
-            logger.warning("Could not create database tables", exc_info=True)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    _init_db()
+    yield
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="InsPilot Cloud Baby Alpha", lifespan=lifespan)
+
     app.include_router(health_router)
     app.include_router(projects_router)
     app.include_router(ingest_router)

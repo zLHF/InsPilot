@@ -54,10 +54,17 @@
     <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; max-height: 160px; overflow-y: auto;">
       {% for rec in workflow.operation_records %}
       <div class="text-sm" style="padding: 4px 0; border-bottom: 1px solid #f1f5f9;">
-        {% if rec.get('creatorUserId') %}
-          <strong>{{ rec.creatorUserId }}</strong>:
+        {% set user_id = rec.get('userid') or rec.get('userId') or rec.get('creatorUserId') or '未知' %}
+        <strong>{{ user_id }}</strong>
+        {% if rec.get('operation_type') or rec.get('operationType') %}
+          <span class="text-muted"> · {{ rec.get('operation_type') or rec.get('operationType') }}</span>
         {% endif %}
-        {{ rec.get('remark', rec.get('result', '')) }}
+        {% if rec.get('operation_result') or rec.get('operationResult') or rec.get('result') %}
+          <span class="badge badge-blue">{{ rec.get('operation_result') or rec.get('operationResult') or rec.get('result') }}</span>
+        {% endif %}
+        {% if rec.get('remark') %}
+          <div style="margin-top:2px;">{{ rec.get('remark') }}</div>
+        {% endif %}
         {% if rec.get('date_formatted') %}
           <span class="text-muted" style="float: right;">{{ rec.date_formatted }}</span>
         {% elif rec.get('date') %}

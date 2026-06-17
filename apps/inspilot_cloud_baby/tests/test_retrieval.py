@@ -7,7 +7,12 @@ import pytest
 
 from inspilot_cloud_baby.auth import CurrentUser
 from inspilot_cloud_baby.models import KnowledgeSensitivity, ProjectVisibility
-from inspilot_cloud_baby.retrieval import KnowledgeDocument, retrieve_documents
+from inspilot_cloud_baby.retrieval import (
+    KnowledgeDocument,
+    _extract_query_filters,
+    _query_terms,
+    retrieve_documents,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +57,19 @@ def sample_docs() -> list[KnowledgeDocument]:
 
 
 class TestKeywordRetrieval:
+    def test_query_terms_preserve_chinese_phrases(self):
+        assert _query_terms("浙江华重融资担保") == ["浙江华重融资担保"]
+        assert _query_terms("西宁市 浙江华重融资担保") == ["西宁市", "浙江华重融资担保"]
+
+    def test_query_filter_extraction_ignores_polluted_non_region_values(self):
+        mock_db = MagicMock()
+        with patch(
+            "inspilot_cloud_baby.retrieval._load_known_regions",
+            return_value=["山西省平台（PDF）顺欣担保", "担保", "详情页", "西宁市"],
+        ):
+            assert _extract_query_filters(query="浙江华重融资担保", db=mock_db) == {}
+            assert _extract_query_filters(query="西宁市项目", db=mock_db) == {"region": "西宁市"}
+
     def test_filters_invisible_sensitive_documents(self, company_user, sample_docs):
         results = retrieve_documents(query="华南 车险 项目", user=company_user, documents=sample_docs)
         assert [doc.id for doc in results] == ["k1"]
