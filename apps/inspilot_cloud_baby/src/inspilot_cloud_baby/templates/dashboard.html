@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}仪表盘 - InsPilot 云小宝 Alpha{% endblock %}
+{% block page_title %}仪表盘{% endblock %}
+{% block page_desc %}InsPilot 云小宝 Alpha 管理后台概览{% endblock %}
+
+{% block content %}
+<div class="stats-grid">
+  <div class="stat-card accent">
+    <div class="stat-value">{{ project_count }}</div>
+    <div class="stat-label">项目总数</div>
+  </div>
+  <div class="stat-card info">
+    <div class="stat-value">{{ knowledge_count }}</div>
+    <div class="stat-label">知识条目</div>
+  </div>
+  <div class="stat-card warning">
+    <div class="stat-value">{{ pending_count }}</div>
+    <div class="stat-label">待审核</div>
+  </div>
+  <div class="stat-card success">
+    <div class="stat-value">{{ active_count }}</div>
+    <div class="stat-label">已生效</div>
+  </div>
+</div>
+
+<div class="guide-box">
+  <h3>📖 使用说明</h3>
+  <ul>
+    <li><strong>资料投喂</strong> — 将业务资料（条款 PDF、费率表、操作指南、项目方案等）录入系统。支持粘贴文本或上传文件，系统自动识别资料类型和敏感级别，人工确认后入库。</li>
+    <li><strong>知识管理</strong> — 查看所有已录入的知识条目。支持按项目、状态、敏感级别筛选。可对条目执行审核通过、归档、删除等操作。</li>
+    <li><strong>项目管理</strong> — 管理项目及其可见范围（公司可见 / 项目成员 / 受限）。项目是知识条目的归属容器。</li>
+    <li><strong>钉钉审批导入</strong> — 输入钉钉审批实例 ID 或工单号，通过钉钉企业管理 API 拉取审批流程并导入知识库。</li>
+  </ul>
+</div>
+
+<div class="guide-box">
+  <h3>🚀 快速开始</h3>
+  <ul>
+    <li><strong>第一步</strong>：前往 <a href="/admin/projects">项目管理</a> 创建至少一个项目，作为资料的归属范围。</li>
+    <li><strong>第二步</strong>：前往 <a href="/admin/ingest">资料投喂</a> 粘贴或上传资料文本，系统自动识别后确认入库。</li>
+    <li><strong>第三步</strong>：前往 <a href="/admin/knowledge">知识管理</a> 审核新录入的资料，确认后状态变为「已生效」，可被检索使用。</li>
+  </ul>
+</div>
+
+<div class="guide-box">
+  <h3>⚙️ 系统架构</h3>
+  <ul>
+    <li><strong>知识分层</strong>：事实层（审核通过的结构化数据）、候选层（待审核的新录入数据）、参考层（原始非结构化资料）</li>
+    <li><strong>敏感级别</strong>：公开摘要（公司可见的汇总信息）、项目受限（仅项目成员可见）、敏感（含 PII，需授权查看）</li>
+    <li><strong>资料类型</strong>：费率表、操作指南、技术方案、项目笔记 — 系统根据内容自动识别</li>
+    <li><strong>状态流转</strong>：草稿 → 待审核 → 已生效 → 已归档（冲突状态用于标记版本冲突）</li>
+  </ul>
+</div>
+
+<div class="card">
+  <div class="card-header">⚡ 快捷操作</div>
+  <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+    <a href="/admin/ingest" class="btn btn-primary">📥 投喂新资料</a>
+    <a href="/admin/knowledge?status=pending_review" class="btn btn-warning">🔍 审核待处理 ({{ pending_count }})</a>
+    <a href="/admin/projects" class="btn btn-outline">🗂️ 管理项目</a>
+    <a href="/admin/dws" class="btn btn-outline">🔗 钉钉审批导入</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">📡 API 端点</div>
+  <table>
+    <thead>
+      <tr>
+        <th>方法</th>
+        <th>路径</th>
+        <th>说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/health</code></td><td>健康检查</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/ingest/preview</code></td><td>资料分类预览</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/chat/query</code></td><td>对话查询</td></tr>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/admin/dws/preview</code></td><td>钉钉审批流程预览</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/projects</code></td><td>项目列表</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/admin</code></td><td>管理后台首页</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/admin/ingest</code></td><td>资料投喂页面</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/admin/knowledge</code></td><td>知识管理页面</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/admin/projects</code></td><td>项目管理页面</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/admin/dws</code></td><td>钉钉审批导入页面</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}

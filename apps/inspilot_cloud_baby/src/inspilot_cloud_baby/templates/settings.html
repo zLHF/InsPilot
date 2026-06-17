@@ -1,0 +1,278 @@
+{% extends "base.html" %}
+{% block title %}系统设置 - InsPilot 云小宝 Alpha{% endblock %}
+{% block page_title %}系统设置{% endblock %}
+{% block page_desc %}管理向量搜索 API 配置和系统参数{% endblock %}
+
+{% block content %}
+
+{% if saved %}
+<div class="success-card" style="margin-bottom:20px">
+  <div class="check">✅</div>
+  <h3>设置已保存</h3>
+  <p>Embedding 服务将在下次使用时自动加载新配置。</p>
+</div>
+{% endif %}
+
+{% if error %}
+<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:16px;margin-bottom:20px;">
+  <div style="display:flex;align-items:flex-start;gap:10px;">
+    <span style="font-size:22px;">❌</span>
+    <div>
+      <h4 style="font-size:14px;font-weight:600;color:#991b1b;margin-bottom:4px;">保存失败</h4>
+      <p style="font-size:13px;color:#991b1b;margin:0;white-space:pre-wrap;">{{ error }}</p>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="guide-box">
+  <h3>💡 配置说明</h3>
+  <ul>
+    <li><strong>API Key</strong> 留空表示不修改现有值；输入新值会覆盖。</li>
+    <li><strong>Base URL</strong> 留空使用 OpenAI 官方地址；可填代理或兼容 API 地址。</li>
+    <li>修改设置后，Embedding 服务会自动热重载，无需重启服务。</li>
+    <li>环境变量 <code>BUSINESS_ROBOT_OPENAI_API_KEY</code> 优先级高于数据库配置。</li>
+  </ul>
+</div>
+
+<!-- 向量搜索状态 -->
+<div class="card">
+  <div class="card-header">
+    <span>🔍 向量搜索状态</span>
+  </div>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+    <div>
+      <div class="text-sm text-muted">Embedding 服务</div>
+      <div style="margin-top:4px;">
+        {% if service_available %}
+          <span class="badge badge-green">● 可用</span>
+        {% else %}
+          <span class="badge badge-red">● 不可用</span>
+        {% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="text-sm text-muted">向量搜索开关</div>
+      <div style="margin-top:4px;">
+        {% if vector_enabled %}
+          <span class="badge badge-green">已开启</span>
+        {% else %}
+          <span class="badge badge-gray">已关闭</span>
+        {% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="text-sm text-muted">API Key 来源</div>
+      <div style="margin-top:4px;">
+        {% if api_key_source == 'env' %}
+          <span class="badge badge-blue">环境变量</span>
+        {% elif api_key_source == 'db' %}
+          <span class="badge badge-purple">数据库</span>
+        {% else %}
+          <span class="badge badge-amber">未配置</span>
+        {% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="text-sm text-muted">已索引知识条目</div>
+      <div style="margin-top:4px; font-size:18px; font-weight:600;">
+        {{ embedded_count }} / {{ total_count }}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 配置表单 -->
+<form method="POST" action="/admin/settings">
+  <div class="card">
+    <div class="card-header">
+      <span>🔑 OpenAI Embedding 配置</span>
+    </div>
+
+    <div class="form-group">
+      <label for="openai_api_key">API Key</label>
+      <input type="text" id="openai_api_key" name="openai_api_key"
+             placeholder="{{ api_key_hint }}" autocomplete="off">
+      <div class="text-sm text-muted mt-2">sk-... 开头的 OpenAI API Key。留空 = 保持当前值不变。</div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label for="openai_base_url">Base URL（可选）</label>
+        <input type="text" id="openai_base_url" name="openai_base_url"
+               value="{{ current_base_url }}"
+               placeholder="https://api.openai.com/v1">
+        <div class="text-sm text-muted mt-2">留空使用官方地址。</div>
+      </div>
+      <div class="form-group">
+        <label for="openai_embedding_model">Embedding 模型</label>
+        <input type="text" id="openai_embedding_model" name="openai_embedding_model"
+               value="{{ current_model }}"
+               placeholder="text-embedding-3-small">
+        <div class="text-sm text-muted mt-2">推荐 text-embedding-3-small。</div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+        <input type="checkbox" name="enable_vector_search" value="true"
+               {% if vector_enabled %}checked{% endif %}
+               style="width:auto;">
+        启用向量搜索
+      </label>
+      <div class="text-sm text-muted mt-2">关闭后检索将使用关键词匹配（降级模式）。</div>
+    </div>
+
+    <div style="display:flex;gap:8px;align-items:center;margin-top:10px;">
+      <button type="button" class="btn btn-outline btn-sm" onclick="testModel('embedding')">
+        🧪 测试此配置
+      </button>
+    </div>
+    <div id="test-embedding" class="test-result"></div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <div class="card-header">
+      <span>🤖 对话模型配置 <small style="font-weight:normal;color:#94a3b8;">（RAG 回答用）</small></span>
+    </div>
+    <div class="text-sm text-muted mb-2">
+      配置用于对话式回答的大模型（OpenAI 兼容）。支持 OpenRouter / DeepSeek / OpenAI 等。
+      {% if chat_available %}<span class="badge badge-green">✓ 已配置可用</span>{% else %}<span class="badge badge-gray">未配置（对话将降级为列表）</span>{% endif %}
+    </div>
+
+    <div class="form-group">
+      <label for="chat_api_key">API Key</label>
+      <input type="text" id="chat_api_key" name="chat_api_key"
+             placeholder="{{ chat_key_hint }}" autocomplete="off">
+      <div class="text-sm text-muted mt-2">留空 = 保持当前值不变。</div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label for="chat_base_url">Base URL</label>
+        <input type="text" id="chat_base_url" name="chat_base_url"
+               value="{{ chat_base_url }}"
+               placeholder="https://openrouter.ai/api/v1">
+        <div class="text-sm text-muted mt-2">OpenRouter 用 https://openrouter.ai/api/v1。</div>
+      </div>
+      <div class="form-group">
+        <label for="chat_model">模型名称</label>
+        <input type="text" id="chat_model" name="chat_model"
+               value="{{ chat_model }}"
+               placeholder="openai/gpt-4o-mini">
+        <div class="text-sm text-muted mt-2">如 openai/gpt-4o-mini、deepseek/deepseek-chat。</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;align-items:center;margin-top:10px;">
+      <button type="button" class="btn btn-outline btn-sm" onclick="testModel('chat')">
+        🧪 测试此配置
+      </button>
+    </div>
+    <div id="test-chat" class="test-result"></div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <div class="card-header">
+      <span>🗄️ 生产数据库配置 <small style="font-weight:normal;color:#94a3b8;">（SQL Server，只读）</small></span>
+    </div>
+    <div class="text-sm text-muted mb-2">
+      连接生产库用于实时查询（费率、订单、平台配置等）。建议使用<strong>只读账号</strong>。
+      {% if prod_db_available %}<span class="badge badge-green">✓ 已配置</span>{% else %}<span class="badge badge-gray">未配置</span>{% endif %}
+    </div>
+
+    <div class="form-row">
+      <div class="form-group" style="flex:2;">
+        <label for="prod_db_host">服务器地址</label>
+        <input type="text" id="prod_db_host" name="prod_db_host"
+               value="{{ prod_db_host }}" placeholder="如 47.97.211.193">
+      </div>
+      <div class="form-group" style="flex:1;">
+        <label for="prod_db_port">端口</label>
+        <input type="text" id="prod_db_port" name="prod_db_port"
+               value="{{ prod_db_port }}" placeholder="1433">
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="prod_db_name">数据库名</label>
+      <input type="text" id="prod_db_name" name="prod_db_name"
+             value="{{ prod_db_name }}" placeholder="如 YDB_GeneralSystemDB">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="prod_db_user">用户名</label>
+        <input type="text" id="prod_db_user" name="prod_db_user"
+               value="{{ prod_db_user }}" placeholder="只读账号">
+      </div>
+      <div class="form-group">
+        <label for="prod_db_password">密码</label>
+        <input type="password" id="prod_db_password" name="prod_db_password"
+               placeholder="留空 = 保持当前值" autocomplete="off">
+      </div>
+    </div>
+
+    <button type="button" class="btn btn-outline btn-sm" onclick="testDB()">
+      🧪 测试此连接
+    </button>
+    <div id="test-db" class="test-result"></div>
+  </div>
+
+  <div style="margin-top:16px; display:flex; gap:12px; align-items:center;">
+    <button type="submit" class="btn btn-primary">💾 保存设置</button>
+    <a href="/admin/settings" class="btn btn-outline">取消</a>
+    <span class="text-sm text-muted">💡 建议先点「测试此配置」验证通过后再保存。</span>
+  </div>
+</form>
+
+<style>
+  .test-result:empty { display:none; }
+  .test-result { margin-top:10px; }
+</style>
+<script>
+async function testModel(which){
+  // Read CURRENT input-box values (pre-save) for the requested model section
+  const prefix = which === 'chat' ? 'chat_' : 'openai_';
+  const modelKey = which === 'chat' ? 'chat_model' : 'openai_embedding_model';
+  const apiKey = document.getElementById(prefix + 'api_key').value.trim();
+  const baseUrl = document.getElementById(prefix + 'base_url').value.trim();
+  const model = document.getElementById(modelKey).value.trim();
+  const area = document.getElementById('test-' + which);
+  const endpoint = which === 'chat' ? '/admin/settings/chat-test' : '/admin/settings/test';
+
+  area.innerHTML = '<span class="text-sm text-muted">⏳ 测试中…</span>';
+  try{
+    const res = await fetch(endpoint, {
+      method:'POST',
+      headers:{'Content-Type':'application/json', 'X-Test-Body': JSON.stringify({api_key:apiKey, base_url:baseUrl, model:model})},
+      body:'{}'
+    });
+    area.innerHTML = await res.text();
+  }catch(e){
+    area.innerHTML = '<div style="color:#dc2626;font-size:13px;">❌ 请求失败：'+e.message+'</div>';
+  }
+}
+
+async function testDB(){
+  const host = document.getElementById('prod_db_host').value.trim();
+  const port = document.getElementById('prod_db_port').value.trim();
+  const database = document.getElementById('prod_db_name').value.trim();
+  const user = document.getElementById('prod_db_user').value.trim();
+  const password = document.getElementById('prod_db_password').value.trim();
+  const area = document.getElementById('test-db');
+  if(!host){ area.innerHTML = '<div style="color:#dc2626;font-size:13px;">请先填写服务器地址</div>'; return; }
+
+  area.innerHTML = '<span class="text-sm text-muted">⏳ 测试中…</span>';
+  try{
+    const res = await fetch('/admin/settings/db-test', {
+      method:'POST',
+      headers:{'Content-Type':'application/json', 'X-Test-Body': JSON.stringify({host,port,database,user,password})},
+      body:'{}'
+    });
+    area.innerHTML = await res.text();
+  }catch(e){
+    area.innerHTML = '<div style="color:#dc2626;font-size:13px;">❌ 请求失败：'+e.message+'</div>';
+  }
+}
+</script>
+
+{% endblock %}

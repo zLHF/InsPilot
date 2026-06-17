@@ -1,0 +1,12 @@
+<div class="success-card">
+  <div class="check">✅</div>
+  <h3>入库成功！</h3>
+  <p>资料「{{ title }}」已保存为 <strong>待审核</strong> 状态</p>
+  <p class="text-sm text-muted" style="margin-top: 8px;">
+    ID: {{ item_id }} · 请前往 <a href="/admin/knowledge?status=pending_review">知识管理</a> 审核
+  </p>
+  <div style="margin-top: 16px;">
+    <a href="/admin/ingest" class="btn btn-primary">📥 继续投喂</a>
+    <a href="/admin/knowledge" class="btn btn-outline">📚 查看知识库</a>
+  </div>
+</div>

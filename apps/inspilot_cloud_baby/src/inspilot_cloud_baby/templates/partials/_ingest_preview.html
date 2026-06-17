@@ -1,0 +1,108 @@
+<div class="confirm-card">
+  <h3>📋 系统识别结果 — 请确认后入库</h3>
+
+  <div class="field-grid" style="margin-bottom: 16px;">
+    <div>
+      <div class="field-label">资料类型</div>
+      <div class="field-value">
+        <span class="badge badge-blue">
+          {{ material_type_labels.get(result.material_type, result.material_type) }}
+        </span>
+      </div>
+    </div>
+    <div>
+      <div class="field-label">建议归属</div>
+      <div class="field-value">
+        <span class="badge badge-purple">
+          {{ scope_labels.get(result.suggested_scope, result.suggested_scope) }}
+        </span>
+      </div>
+    </div>
+    <div>
+      <div class="field-label">敏感级别</div>
+      <div class="field-value">
+        {% if result.sensitivity == 'sensitive' %}
+          <span class="badge badge-red">{{ sensitivity_labels.get(result.sensitivity, result.sensitivity) }}</span>
+        {% elif result.sensitivity == 'project_restricted' %}
+          <span class="badge badge-amber">{{ sensitivity_labels.get(result.sensitivity, result.sensitivity) }}</span>
+        {% else %}
+          <span class="badge badge-green">{{ sensitivity_labels.get(result.sensitivity, result.sensitivity) }}</span>
+        {% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="field-label">敏感命中</div>
+      <div class="field-value">
+        {% if result.detected_sensitive_terms %}
+          {% for term in result.detected_sensitive_terms %}
+            <span class="badge badge-red">{{ term }}</span>
+          {% endfor %}
+        {% else %}
+          <span class="text-muted">无</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {% if filename %}
+  <div style="margin-bottom: 12px;">
+    <span class="text-muted text-sm">文件：</span> {{ filename }}
+  </div>
+  {% endif %}
+
+  <div style="margin-bottom: 16px;">
+    <span class="text-muted text-sm">内容预览：</span>
+    <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 4px; padding: 8px; margin-top: 4px; max-height: 120px; overflow-y: auto; font-size: 13px; white-space: pre-wrap;">{{ text_preview }}</div>
+  </div>
+
+  <form hx-post="/admin/ingest/confirm"
+        hx-target="#preview-area"
+        hx-swap="innerHTML"
+        hx-indicator="#confirm-spinner">
+    <input type="hidden" name="material_type" value="{{ result.material_type }}">
+    <input type="hidden" name="sensitivity" value="{{ result.sensitivity }}">
+    <input type="hidden" name="original_text" value="{{ text_preview }}">
+
+    <div class="form-row" style="margin-bottom: 16px;">
+      <div class="form-group">
+        <label for="title">标题</label>
+        <input type="text" name="title" value="{{ filename or '未命名资料' }}" placeholder="给这份资料起个名字">
+      </div>
+      <div class="form-group">
+        <label for="project_id">归属项目</label>
+        <select name="project_id">
+          <option value="">— 不指定项目 —</option>
+          {% for p in projects %}
+          <option value="{{ p.id }}">{{ p.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="form-row" style="margin-bottom: 16px;">
+      <div class="form-group">
+        <label for="scope">可见范围</label>
+        <select name="scope">
+          {% for key, label in scope_labels.items() %}
+          <option value="{{ key }}" {{ 'selected' if key == result.suggested_scope else '' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="note">备注</label>
+        <input type="text" name="note" placeholder="可选的补充说明">
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 12px; align-items: center;">
+      <button type="submit" class="btn btn-success">
+        <span class="htmx-hide-on-request">✅ 确认入库</span>
+        <span id="confirm-spinner" class="htmx-indicator">⏳ 保存中...</span>
+      </button>
+      <button type="button" class="btn btn-outline"
+              onclick="document.getElementById('preview-area').innerHTML = ''">
+        ❌ 取消
+      </button>
+    </div>
+  </form>
+</div>

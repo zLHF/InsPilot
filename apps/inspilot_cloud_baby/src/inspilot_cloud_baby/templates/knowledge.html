@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}知识管理 - InsPilot 云小宝 Alpha{% endblock %}
+{% block page_title %}知识管理{% endblock %}
+{% block page_desc %}查看和管理所有知识条目，审核待处理的资料{% endblock %}
+
+{% block content %}
+{% set base = '/admin/knowledge?' + (filter_qs + '&' if filter_qs else '') + 'page=' %}
+
+{# pager macro — reused above and below the table #}
+{% macro pager() %}
+  {% if total_pages > 1 %}
+  <div class="pager">
+    {% if page > 1 %}
+    <a href="{{ base }}{{ page-1 }}" class="pager-btn">← 上一页</a>
+    {% endif %}
+    {% for p in range(1, total_pages + 1) %}
+      {% if p == page %}
+      <span class="pager-cur">{{ p }}</span>
+      {% elif p == 1 or p == total_pages or (p >= page-2 and p <= page+2) %}
+      <a href="{{ base }}{{ p }}" class="pager-btn">{{ p }}</a>
+      {% elif p == 2 or p == total_pages-1 %}
+      <span class="pager-ellipsis">…</span>
+      {% endif %}
+    {% endfor %}
+    {% if page < total_pages %}
+    <a href="{{ base }}{{ page+1 }}" class="pager-btn">下一页 →</a>
+    {% endif %}
+  </div>
+  {% endif %}
+{% endmacro %}
+
+<div class="guide-box">
+  <h3>📖 知识管理说明</h3>
+  <ul>
+    <li>知识条目按 <strong>待审核 → 已生效 → 已归档</strong> 的流程管理</li>
+    <li>点击「✅ 通过」将待审核条目变为已生效，生效后的条目可被对话检索</li>
+    <li>使用筛选器按项目、状态、敏感级别过滤条目</li>
+    <li>敏感级别的条目含 PII 信息，仅授权用户可查看</li>
+  </ul>
+</div>
+
+<div class="card">
+  <form method="get" action="/admin/knowledge" class="toolbar">
+    <input type="search" name="q" value="{{ current_query }}"
+           placeholder="搜索标题…" style="min-width: 200px;">
+    <select name="status">
+      <option value="">全部状态</option>
+      <option value="pending_review" {{ 'selected' if current_status == 'pending_review' else '' }}>待审核</option>
+      <option value="active" {{ 'selected' if current_status == 'active' else '' }}>已生效</option>
+      <option value="draft" {{ 'selected' if current_status == 'draft' else '' }}>草稿</option>
+      <option value="archived" {{ 'selected' if current_status == 'archived' else '' }}>已归档</option>
+      <option value="conflict" {{ 'selected' if current_status == 'conflict' else '' }}>冲突</option>
+    </select>
+    <select name="project_id">
+      <option value="">全部项目</option>
+      {% for p in projects %}
+      <option value="{{ p.id }}" {{ 'selected' if current_project == p.id|string else '' }}>{{ p.name }}</option>
+      {% endfor %}
+    </select>
+    <select name="sensitivity">
+      <option value="">全部敏感级别</option>
+      <option value="public_summary" {{ 'selected' if current_sensitivity == 'public_summary' else '' }}>公开摘要</option>
+      <option value="project_restricted" {{ 'selected' if current_sensitivity == 'project_restricted' else '' }}>项目受限</option>
+      <option value="sensitive" {{ 'selected' if current_sensitivity == 'sensitive' else '' }}>敏感</option>
+    </select>
+    <button type="submit" class="btn btn-primary btn-sm">🔍 筛选</button>
+    <a href="/admin/knowledge" class="btn btn-outline btn-sm">重置</a>
+    <input type="hidden" name="page_size" value="{{ page_size }}">
+    <span class="text-sm text-muted" style="margin-left:auto;">
+      共 <strong style="color:#0f172a">{{ total }}</strong> 条
+      {% if total_pages > 1 %}· 第 {{ page }}/{{ total_pages }} 页{% endif %}
+      {% if total > 0 %}· 显示 {{ (page-1)*page_size+1 }}-{{ [page*page_size, total]|min }}{% endif %}
+      <select id="page-size-sel" style="margin-left:8px;" onchange="changePageSize(this.value)">
+        <option value="20" {{ 'selected' if page_size == 20 else '' }}>20 条/页</option>
+        <option value="50" {{ 'selected' if page_size == 50 else '' }}>50 条/页</option>
+        <option value="100" {{ 'selected' if page_size == 100 else '' }}>100 条/页</option>
+      </select>
+    </span>
+  </form>
+</div>
+
+<div class="card">
+  {{ pager() }}
+  {% if items %}
+  <table>
+    <thead>
+      <tr>
+        <th>标题</th>
+        <th>项目</th>
+        <th>类型</th>
+        <th>敏感级别</th>
+        <th>状态</th>
+        <th>创建时间</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      {% set project_name = project_names.get(item.project_id|string, '') %}
+      {% include "partials/_knowledge_row.html" %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <div class="icon">📭</div>
+    <h3>暂无知识条目</h3>
+    <p class="text-muted">前往 <a href="/admin/ingest">资料投喂</a> 添加第一批资料</p>
+  </div>
+  {% endif %}
+  {{ pager() }}
+</div>
+
+<script>
+function changePageSize(size){
+  // keep current filters, reset to page 1 with new size
+  const u = new URL('/admin/knowledge', location.origin);
+  {% if current_query %}u.searchParams.set('q', {{ current_query|tojson }});{% endif %}
+  {% if current_status %}u.searchParams.set('status', {{ current_status|tojson }});{% endif %}
+  {% if current_project %}u.searchParams.set('project_id', {{ current_project|tojson }});{% endif %}
+  {% if current_sensitivity %}u.searchParams.set('sensitivity', {{ current_sensitivity|tojson }});{% endif %}
+  u.searchParams.set('page_size', size);
+  location.href = u.toString();
+}
+</script>
+
+<style>
+  .pager { display:flex; gap:6px; justify-content:center; align-items:center; flex-wrap:wrap; }
+  .pager:first-child { margin-bottom:12px; }
+  .pager:last-child { margin-top:16px; }
+  .pager-btn, .pager-cur {
+    display:inline-block; padding:6px 12px; font-size:13px; border-radius:6px;
+    text-decoration:none; border:1px solid #cbd5e1; color:#475569; background:#fff;
+  }
+  .pager-btn:hover { border-color:#3b82f6; color:#3b82f6; }
+  .pager-cur { background:#3b82f6; color:#fff; border-color:#3b82f6; font-weight:600; }
+  .pager-ellipsis { padding:6px 4px; color:#94a3b8; }
+</style>
+{% endblock %}

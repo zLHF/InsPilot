@@ -1,0 +1,12 @@
+<div class="success-card" style="margin-top: 16px;">
+  <div class="check">✅</div>
+  <h3>导入成功！</h3>
+  <p>审批流程「{{ title }}」已保存为知识条目</p>
+  <p class="text-sm text-muted" style="margin-top: 8px;">
+    {% if item_id %}ID: {{ item_id }} · {% endif %}状态：<strong>待审核</strong>
+  </p>
+  <div style="margin-top: 16px; display: flex; gap: 12px; justify-content: center;">
+    <a href="/admin/dws" class="btn btn-primary">📥 继续导入</a>
+    <a href="/admin/knowledge?status=pending_review" class="btn btn-outline">📚 查看知识库</a>
+  </div>
+</div>

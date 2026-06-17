@@ -1,0 +1,20 @@
+<tr id="project-row-{{ project.id }}">
+  <td><strong>{{ project.name }}</strong></td>
+  <td>
+    {% set vis = project.visibility.value if project.visibility.__class__.__name__ != 'str' else project.visibility %}
+    {% if vis == 'company_visible' %}
+      <span class="badge badge-green">{{ visibility_labels.get(project.visibility, project.visibility) }}</span>
+    {% elif vis == 'project_members' %}
+      <span class="badge badge-blue">{{ visibility_labels.get(project.visibility, project.visibility) }}</span>
+    {% else %}
+      <span class="badge badge-red">{{ visibility_labels.get(project.visibility, project.visibility) }}</span>
+    {% endif %}
+  </td>
+  <td class="text-muted text-sm">{{ project.summary[:60] if project.summary else '—' }}</td>
+  <td>
+    <a href="/admin/knowledge?project_id={{ project.id }}" class="badge badge-blue">
+      {{ item_count }} 条
+    </a>
+  </td>
+  <td class="text-sm">{{ project.created_at.strftime('%Y-%m-%d') if project.created_at else '—' }}</td>
+</tr>

@@ -1,0 +1,144 @@
+<div class="confirm-card" style="margin-top: 16px;">
+  <h3>📋 钉钉审批流程预览</h3>
+
+  <div class="field-grid" style="margin-bottom: 16px;">
+    <div>
+      <div class="field-label">流程标题</div>
+      <div class="field-value">{{ workflow.title or '(无标题)' }}</div>
+    </div>
+    <div>
+      <div class="field-label">流程 ID</div>
+      <div class="field-value"><code>{{ workflow_id }}</code></div>
+    </div>
+    {% if workflow.status %}
+    <div>
+      <div class="field-label">审批状态</div>
+      <div class="field-value">
+        {% if 'COMPLETED' in workflow.status or 'agree' in workflow.status|lower %}
+          <span class="badge badge-green">{{ workflow.status }}</span>
+        {% elif 'RUNNING' in workflow.status or 'running' in workflow.status|lower %}
+          <span class="badge badge-amber">{{ workflow.status }}</span>
+        {% else %}
+          <span class="badge badge-gray">{{ workflow.status }}</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+    {% if workflow.originator %}
+    <div>
+      <div class="field-label">发起人</div>
+      <div class="field-value">{{ workflow.originator }}</div>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if workflow.form_data %}
+  <div style="margin-bottom: 16px;">
+    <div class="field-label" style="margin-bottom: 6px;">📝 表单字段 ({{ workflow.form_data|length }} 个)</div>
+    <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; max-height: 200px; overflow-y: auto;">
+      <table style="margin: 0;">
+        {% for name, value in workflow.form_data.items() %}
+        <tr>
+          <td style="padding: 4px 8px; font-weight: 500; width: 140px; border: none;">{{ name }}</td>
+          <td style="padding: 4px 8px; border: none; color: var(--text-secondary);">{{ value[:200] }}{% if value|length > 200 %}…{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if workflow.operation_records %}
+  <div style="margin-bottom: 16px;">
+    <div class="field-label" style="margin-bottom: 6px;">📝 操作记录 ({{ workflow.operation_records|length }} 条)</div>
+    <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; max-height: 160px; overflow-y: auto;">
+      {% for rec in workflow.operation_records %}
+      <div class="text-sm" style="padding: 4px 0; border-bottom: 1px solid #f1f5f9;">
+        {% if rec.get('creatorUserId') %}
+          <strong>{{ rec.creatorUserId }}</strong>:
+        {% endif %}
+        {{ rec.get('remark', rec.get('result', '')) }}
+        {% if rec.get('date_formatted') %}
+          <span class="text-muted" style="float: right;">{{ rec.date_formatted }}</span>
+        {% elif rec.get('date') %}
+          <span class="text-muted" style="float: right;">{{ rec.date }}</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if workflow.comments %}
+  <div style="margin-bottom: 16px;">
+    <div class="field-label" style="margin-bottom: 6px;">💬 评论 ({{ workflow.comments|length }} 条)</div>
+    <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; max-height: 160px; overflow-y: auto;">
+      {% for comment in workflow.comments %}
+      <div class="text-sm" style="padding: 4px 0; border-bottom: 1px solid #f1f5f9;">
+        <strong>{{ comment.user_id }}</strong>: {{ comment.content }}
+        {% if comment.timestamp %}
+        <span class="text-muted" style="float: right;">{{ comment.timestamp }}</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if workflow.attachments %}
+  <div style="margin-bottom: 16px;">
+    <div class="field-label" style="margin-bottom: 6px;">📎 附件 ({{ workflow.attachments|length }} 个)</div>
+    <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px;">
+      {% for att in workflow.attachments %}
+      <div class="text-sm" style="padding: 4px 0; border-bottom: 1px solid #f1f5f9;">
+        {% if att.download_url %}
+          <a href="{{ att.download_url }}" target="_blank" style="color: var(--accent);">
+            📎 {{ att.file_name or att.get('name', '附件') }}
+          </a>
+        {% else %}
+          📎 {{ att.file_name or att.get('name', '附件') }}
+        {% endif %}
+        {% if att.file_size %}
+        <span class="text-muted">({{ (att.file_size / 1024)|round(1) }} KB)</span>
+        {% endif %}
+        {% if att.file_id %}
+        <span class="text-muted" style="font-size: 11px;">ID: {{ att.file_id[:16] }}…</span>
+        {% endif %}
+        {% if att.component_type %}
+        <span class="badge badge-blue" style="margin-left: 4px;">{{ att.component_type }}</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ---- Import form ---- #}
+  <form hx-post="/admin/dws/import"
+        hx-target="#dws-preview-area"
+        hx-swap="innerHTML"
+        hx-indicator="#import-spinner"
+        style="border-top: 1px solid #fde68a; padding-top: 16px; margin-top: 16px;">
+    <input type="hidden" name="workflow_id" value="{{ workflow_id }}">
+    <input type="hidden" name="title" value="{{ workflow.title or '' }}">
+    <div class="form-group" style="margin-bottom: 12px;">
+      <label for="project_id">归属项目（可选）</label>
+      <select name="project_id" style="max-width: 300px;">
+        <option value="">— 不指定项目 —</option>
+        {% for p in projects %}
+        <option value="{{ p.id }}">{{ p.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="display: flex; gap: 12px; align-items: center;">
+      <button type="submit" class="btn btn-success">
+        <span class="htmx-hide-on-request">✅ 确认导入到知识库</span>
+        <span id="import-spinner" class="htmx-indicator">⏳ 导入中...</span>
+      </button>
+      <button type="button" class="btn btn-outline"
+              onclick="document.getElementById('dws-preview-area').innerHTML = ''">
+        ❌ 取消
+      </button>
+    </div>
+  </form>
+</div>

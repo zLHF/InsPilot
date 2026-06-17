@@ -1,0 +1,57 @@
+{% if approvals %}
+<div class="card" style="margin-top: 16px;">
+  <div class="card-header">📋 近期审批实例（{{ approvals|length }} 条，近似列表）</div>
+  <p class="text-sm text-muted mb-2">
+    列出近 7 天内企业可访问的审批实例。钉钉开放平台无「待办」API，此处按已知审批模板扫描近期实例，仅作近似参考。
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>审批标题</th>
+        <th>发起人</th>
+        <th>状态</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in approvals %}
+      <tr id="approval-row-{{ loop.index }}">
+        <td><strong>{{ a.title or '(无标题)' }}</strong></td>
+        <td class="text-sm">{{ a.originator or '—' }}</td>
+        <td>
+          {% if 'COMPLETED' in a.status %}
+            <span class="badge badge-green">{{ a.status }}</span>
+          {% elif 'RUNNING' in a.status %}
+            <span class="badge badge-amber">{{ a.status }}</span>
+          {% elif 'CANCELED' in a.status %}
+            <span class="badge badge-slate">{{ a.status }}</span>
+          {% else %}
+            <span class="badge badge-gray">{{ a.status or '—' }}</span>
+          {% endif %}
+        </td>
+        <td>
+          <form hx-post="/admin/dws/preview"
+                hx-target="#dws-preview-area"
+                hx-swap="innerHTML"
+                hx-indicator="#preview-spinner-{{ loop.index }}">
+            <input type="hidden" name="workflow_id" value="{{ a.process_instance_id }}">
+            <button type="submit" class="btn btn-primary btn-sm">
+              <span class="htmx-hide-on-request">🔍 预览</span>
+              <span id="preview-spinner-{{ loop.index }}" class="htmx-indicator">⏳</span>
+            </button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card" style="margin-top: 16px;">
+  <div class="empty-state">
+    <div class="icon">📭</div>
+    <h3>没有近期的审批实例</h3>
+    <p class="text-muted">近 7 天内未扫描到可访问的审批实例，可改为直接输入审批实例 ID 或工单号查询。</p>
+  </div>
+</div>
+{% endif %}

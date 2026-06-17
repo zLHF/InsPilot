@@ -1,0 +1,40 @@
+{% if has_admin and admin_ok %}
+<div class="success-card">
+  <div class="check">✅</div>
+  <h3>钉钉企业管理 API 已连接</h3>
+  <p>已配置企业内部应用凭证，可访问<strong>全部审批流程</strong></p>
+  <div style="margin-top: 12px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
+    <span class="badge badge-green">✓ 企业 AppKey 已配置</span>
+    <span class="badge badge-green">✓ access_token 有效</span>
+  </div>
+</div>
+{% elif has_admin and not admin_ok %}
+<div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px;">
+  <div style="display: flex; align-items: flex-start; gap: 12px;">
+    <span style="font-size: 24px;">⚠️</span>
+    <div>
+      <h4 style="font-size: 14px; font-weight: 600; color: #991b1b; margin-bottom: 6px;">钉钉企业管理 API 连接失败</h4>
+      <p style="font-size: 14px; color: #991b1b;">{{ admin_error }}</p>
+      <div style="margin-top: 10px; display: flex; gap: 8px;">
+        <span class="badge badge-red">✗ 企业 API 不可用</span>
+      </div>
+      <p class="text-sm" style="margin-top: 8px; color: #7f1d1d;">
+        请检查 AppKey/AppSecret 是否正确，以及是否已开通 <code>qyapi_aflow</code> 权限。
+      </p>
+    </div>
+  </div>
+</div>
+{% else %}
+<div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px;">
+  <div style="display: flex; align-items: flex-start; gap: 12px;">
+    <span style="font-size: 24px;">❌</span>
+    <div>
+      <h4 style="font-size: 14px; font-weight: 600; color: #991b1b; margin-bottom: 6px;">未配置钉钉企业管理 API</h4>
+      <p style="font-size: 14px; color: #991b1b;">需要配置企业内部应用的 AppKey/AppSecret 才能导入审批流程。</p>
+      <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+        <span class="badge badge-red">✗ AppKey/AppSecret 未配置</span>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}

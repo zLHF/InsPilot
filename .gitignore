@@ -1,2 +1,14 @@
 .DS_Store
 .omc/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+var/
+
+# Secrets — never commit credentials
+.env
+.env.*
+!.env.example

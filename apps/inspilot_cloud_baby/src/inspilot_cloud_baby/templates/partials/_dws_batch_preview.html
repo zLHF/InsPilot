@@ -1,0 +1,183 @@
+<div class="confirm-card" style="margin-top: 16px;">
+  <h3>📋 批量查询结果</h3>
+
+  {# ---- Summary ---- #}
+  <div style="display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap;">
+    <span class="badge badge-green">✅ 成功 {{ workflows|length }} 个</span>
+    {% if failed %}
+    <span class="badge badge-red">❌ 失败 {{ failed|length }} 个</span>
+    {% endif %}
+  </div>
+
+  {% if failed %}
+  <div style="margin-bottom: 16px;">
+    <div class="field-label" style="margin-bottom: 6px; color: #dc2626;">失败列表</div>
+    <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; padding: 10px;">
+      {% for f in failed %}
+      <div class="text-sm" style="padding: 2px 0;">
+        <code>{{ f.id }}</code>: {{ f.error }}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ---- Workflow table ---- #}
+  {% if workflows %}
+  <table style="margin-bottom: 16px;">
+    <thead>
+      <tr>
+        <th style="width: 40px;"><input type="checkbox" id="batch-select-all" checked onchange="toggleAll(this)"></th>
+        <th>标题</th>
+        <th style="width: 90px;">状态</th>
+        <th style="width: 70px;">附件</th>
+        <th style="width: 70px;">评论</th>
+        <th style="width: 60px;">详情</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for w in workflows %}
+      <tr>
+        <td><input type="checkbox" class="batch-check" value="{{ instance_ids[loop.index0] }}" checked></td>
+        <td>
+          <strong>{{ w.title or '(无标题)' }}</strong>
+          <div class="text-muted text-sm" style="margin-top: 2px;">
+            <code>{{ instance_ids[loop.index0][:20] }}…</code>
+            {% if w.form_data %}
+            · {{ w.form_data|length }} 个字段
+            {% endif %}
+          </div>
+        </td>
+        <td>
+          {% if 'COMPLETED' in w.status or 'agree' in w.status|lower %}
+            <span class="badge badge-green">{{ w.status }}</span>
+          {% elif 'RUNNING' in w.status %}
+            <span class="badge badge-amber">{{ w.status }}</span>
+          {% else %}
+            <span class="badge badge-gray">{{ w.status }}</span>
+          {% endif %}
+        </td>
+        <td class="text-center">
+          {% if w.attachments %}📎 {{ w.attachments|length }}{% else %}-{% endif %}
+        </td>
+        <td class="text-center">
+          {% if w.comments %}💬 {{ w.comments|length }}{% else %}-{% endif %}
+        </td>
+        <td>
+          <button class="btn btn-outline btn-sm" type="button"
+                  onclick="toggleDetail('detail-{{ loop.index0 }}')">
+            ▼
+          </button>
+        </td>
+      </tr>
+      <tr id="detail-{{ loop.index0 }}" style="display: none;">
+        <td colspan="6" style="padding: 12px 16px; background: #f8fafc;">
+          {# Form fields #}
+          {% if w.form_data %}
+          <div style="margin-bottom: 8px;">
+            <strong class="text-sm">表单字段:</strong>
+            <div style="margin-top: 4px;">
+              {% for name, value in w.form_data.items() %}
+              <span class="text-sm"><strong>{{ name }}:</strong> {{ value[:80] }}{% if value|length > 80 %}…{% endif %}</span>
+              {% if not loop.last %}<br>{% endif %}
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+
+          {# Operation records #}
+          {% if w.operation_records %}
+          <div style="margin-bottom: 8px;">
+            <strong class="text-sm">操作记录 ({{ w.operation_records|length }}):</strong>
+            <div style="margin-top: 4px; max-height: 100px; overflow-y: auto;">
+              {% for rec in w.operation_records %}
+              <div class="text-sm" style="padding: 2px 0;">
+                {{ rec.get('creatorUserId', '?') }}: {{ rec.get('remark', rec.get('result', '')) }}
+                {% if rec.get('date_formatted') %}<span class="text-muted"> · {{ rec.date_formatted }}</span>{% endif %}
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+
+          {# Comments #}
+          {% if w.comments %}
+          <div style="margin-bottom: 8px;">
+            <strong class="text-sm">💬 评论 ({{ w.comments|length }}):</strong>
+            <div style="margin-top: 4px; max-height: 80px; overflow-y: auto;">
+              {% for c in w.comments %}
+              <div class="text-sm" style="padding: 2px 0;">
+                <strong>{{ c.user_id }}</strong>: {{ c.content }}
+                {% if c.timestamp %}<span class="text-muted"> · {{ c.timestamp }}</span>{% endif %}
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+
+          {# Attachments #}
+          {% if w.attachments %}
+          <div>
+            <strong class="text-sm">📎 附件 ({{ w.attachments|length }}):</strong>
+            <div style="margin-top: 4px;">
+              {% for att in w.attachments %}
+              <span class="text-sm" style="margin-right: 8px;">
+                {% if att.download_url %}
+                  <a href="{{ att.download_url }}" target="_blank">📎 {{ att.file_name or '附件' }}</a>
+                {% else %}
+                  📎 {{ att.file_name or '附件' }}
+                {% endif %}
+              </span>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {# ---- Batch import form ---- #}
+  <form hx-post="/admin/dws/batch-import"
+        hx-target="#dws-batch-area"
+        hx-swap="innerHTML"
+        hx-indicator="#batch-import-spinner"
+        style="border-top: 1px solid #fde68a; padding-top: 16px; margin-top: 16px;">
+    <input type="hidden" name="workflow_ids" id="batch-import-ids">
+    <div class="form-group" style="margin-bottom: 12px;">
+      <label for="batch_project_id">归属项目（可选）</label>
+      <select name="project_id" id="batch_project_id" style="max-width: 300px;">
+        <option value="">— 不指定项目 —</option>
+        {% for p in projects %}
+        <option value="{{ p.id }}">{{ p.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="display: flex; gap: 12px; align-items: center;">
+      <button type="submit" class="btn btn-success" onclick="collectSelectedIds()">
+        <span class="htmx-hide-on-request">✅ 批量导入所选到知识库</span>
+        <span id="batch-import-spinner" class="htmx-indicator">⏳ 导入中...</span>
+      </button>
+      <button type="button" class="btn btn-outline"
+              onclick="document.getElementById('dws-batch-area').innerHTML = ''">
+        ❌ 取消
+      </button>
+    </div>
+  </form>
+
+  <script>
+    function toggleAll(el) {
+      document.querySelectorAll('.batch-check').forEach(cb => cb.checked = el.checked);
+    }
+    function toggleDetail(id) {
+      const el = document.getElementById(id);
+      el.style.display = el.style.display === 'none' ? '' : 'none';
+    }
+    function collectSelectedIds() {
+      const ids = Array.from(document.querySelectorAll('.batch-check:checked')).map(cb => cb.value);
+      document.getElementById('batch-import-ids').value = ids.join('\n');
+    }
+  </script>
+  {% endif %}
+</div>

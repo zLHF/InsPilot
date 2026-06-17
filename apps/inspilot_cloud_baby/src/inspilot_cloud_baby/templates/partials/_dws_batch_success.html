@@ -1,0 +1,23 @@
+<div class="success-card" style="margin-top: 16px;">
+  <div class="check">✅</div>
+  <h3>批量导入完成</h3>
+  <p>成功导入 <strong>{{ imported_count }}</strong> / {{ total }} 个审批流程到知识库</p>
+
+  {% if errors %}
+  <div style="margin-top: 12px;">
+    <p class="text-sm"><strong>{{ errors|length }} 个失败：</strong></p>
+    <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; padding: 10px; max-height: 120px; overflow-y: auto;">
+      {% for e in errors %}
+      <div class="text-sm" style="padding: 2px 0;">
+        <code>{{ e.id }}</code>: {{ e.error }}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div style="margin-top: 16px; display: flex; gap: 12px;">
+    <a href="/admin/dws" class="btn btn-primary">📥 继续导入</a>
+    <a href="/admin/knowledge?status=pending_review" class="btn btn-outline">📚 查看知识库</a>
+  </div>
+</div>

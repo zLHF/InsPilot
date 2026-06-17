@@ -1,0 +1,261 @@
+{% extends "base.html" %}
+{% block title %}钉钉审批导入 - InsPilot 云小宝 Alpha{% endblock %}
+{% block page_title %}钉钉审批流程导入{% endblock %}
+{% block page_desc %}通过钉钉企业管理 API 拉取 OA 审批流程并导入知识库{% endblock %}
+
+{% block content %}
+<style>
+.dws-progress { display: none; margin-top: 12px; }
+.dws-progress.active { display: block; }
+.dws-progress-bar {
+  height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden;
+}
+.dws-progress-bar-inner {
+  height: 100%; width: 30%; border-radius: 3px;
+  background: linear-gradient(90deg, #3b82f6, #60a5fa, #3b82f6);
+  background-size: 200% 100%;
+  animation: dws-slide 1.5s ease infinite;
+}
+@keyframes dws-slide { 0%{background-position:100% 0} 100%{background-position:-100% 0} }
+.dws-progress-text {
+  font-size: 13px; color: var(--text-secondary); margin-top: 6px;
+  display: flex; justify-content: space-between;
+}
+</style>
+
+<script>
+function startProgress(targetId, steps) {
+  const el = document.getElementById(targetId);
+  if (!el) return;
+  el.classList.add('active');
+  const textEl = el.querySelector('.dws-progress-step');
+  const timeEl = el.querySelector('.dws-progress-time');
+  const startTime = Date.now();
+  let stepIdx = 0;
+  // Cycle through step messages
+  const interval = setInterval(() => {
+    if (!el.classList.contains('active')) { clearInterval(interval); return; }
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+    if (textEl && steps) {
+      stepIdx = Math.min(Math.floor(elapsed / 5), steps.length - 1);
+      textEl.textContent = steps[stepIdx];
+    }
+    if (timeEl) timeEl.textContent = elapsed + 's';
+  }, 500);
+}
+function stopProgress(targetId) {
+  const el = document.getElementById(targetId);
+  if (el) el.classList.remove('active');
+}
+</script>
+
+{# ---- Single query ---- #}
+<div class="card">
+  <div class="card-header">🔍 查询审批流程</div>
+  <form id="single-form"
+        hx-post="/admin/dws/preview"
+        hx-target="#dws-preview-area"
+        hx-swap="innerHTML">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="workflow_id">审批实例 ID 或工单号</label>
+        <input type="text" name="workflow_id" id="workflow_id" required
+               placeholder="实例ID 如 Uh6LpPqiSEiailbBafHsGw... 或工单号 如 202511051648000128619"
+               style="flex: 1;">
+      </div>
+      <div class="form-group">
+        <label>&nbsp;</label>
+        <div style="display: flex; align-items: center; gap: 8px; height: 38px;">
+          <button type="submit" class="btn btn-primary" id="single-btn">🔍 拉取流程</button>
+        </div>
+      </div>
+    </div>
+    <div id="single-progress" class="dws-progress">
+      <div class="dws-progress-bar"><div class="dws-progress-bar-inner"></div></div>
+      <div class="dws-progress-text">
+        <span class="dws-progress-step">正在连接钉钉 API…</span>
+        <span class="dws-progress-time">0s</span>
+      </div>
+    </div>
+  </form>
+  <p class="text-sm text-muted mt-2">
+    支持<strong>工单号</strong>（纯数字）和<strong>审批实例 ID</strong>。
+    工单号解析约需 5-20 秒。
+  </p>
+</div>
+
+<script>
+document.getElementById('single-form').addEventListener('htmx:beforeRequest', function() {
+  document.getElementById('single-btn').disabled = true;
+  document.getElementById('single-btn').textContent = '⏳ 拉取中…';
+  document.getElementById('dws-preview-area').innerHTML = '';
+  startProgress('single-progress', [
+    '正在解析工单号…',
+    '正在搜索审批实例…',
+    '正在获取审批详情…',
+    '正在获取评论和附件…',
+    '请求仍在进行中，请耐心等待…',
+  ]);
+});
+document.getElementById('single-form').addEventListener('htmx:afterRequest', function() {
+  document.getElementById('single-btn').disabled = false;
+  document.getElementById('single-btn').textContent = '🔍 拉取流程';
+  stopProgress('single-progress');
+});
+</script>
+
+<div id="dws-preview-area"></div>
+
+{# ---- Batch query ---- #}
+<div class="card">
+  <div class="card-header">📋 批量查询审批流程</div>
+  <form id="batch-form"
+        hx-post="/admin/dws/batch-preview"
+        hx-target="#dws-batch-area"
+        hx-swap="innerHTML">
+    <div class="form-group">
+      <label for="batch_workflow_ids">审批实例 ID 或工单号（每行一个，或逗号分隔）</label>
+      <textarea name="workflow_ids" id="batch_workflow_ids" rows="5"
+                placeholder="Uh6LpPqiSEiailbBafHsGw00861752&#10;202606101118000214667&#10;另一个实例ID"
+                style="font-family: monospace; font-size: 13px; width: 100%; resize: vertical;"></textarea>
+    </div>
+    <div style="display: flex; gap: 12px; align-items: center;">
+      <button type="submit" class="btn btn-primary" id="batch-btn">📋 批量拉取</button>
+      <span class="text-sm text-muted">需要企业管理 API · 每条约 0.5s</span>
+    </div>
+    <div id="batch-progress" class="dws-progress">
+      <div class="dws-progress-bar"><div class="dws-progress-bar-inner"></div></div>
+      <div class="dws-progress-text">
+        <span class="dws-progress-step">正在批量拉取…</span>
+        <span class="dws-progress-time">0s</span>
+      </div>
+    </div>
+  </form>
+</div>
+
+<script>
+document.getElementById('batch-form').addEventListener('htmx:beforeRequest', function() {
+  document.getElementById('batch-btn').disabled = true;
+  document.getElementById('batch-btn').textContent = '⏳ 批量拉取中…';
+  document.getElementById('dws-batch-area').innerHTML = '';
+  const count = document.getElementById('batch_workflow_ids').value.split(/[\n,]/).filter(s=>s.trim()).length;
+  startProgress('batch-progress', [
+    `正在拉取 ${count} 个流程…`,
+    `正在逐个获取审批详情…`,
+    '请求仍在进行中，请耐心等待…',
+  ]);
+});
+document.getElementById('batch-form').addEventListener('htmx:afterRequest', function() {
+  document.getElementById('batch-btn').disabled = false;
+  document.getElementById('batch-btn').textContent = '📋 批量拉取';
+  stopProgress('batch-progress');
+});
+</script>
+
+<div id="dws-batch-area"></div>
+
+{# ---- Connection status card ---- #}
+<details style="margin-top: 16px;">
+<summary style="cursor: pointer; font-size: 14px; color: var(--text-secondary); padding: 8px 0;">
+  ⚙️ 连接状态与配置指南（展开）
+</summary>
+<div class="card" style="margin-top: 8px;">
+  <div class="card-header">🔌 钉钉企业管理 API 连接状态</div>
+  <div id="dws-connection-status">
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <button class="btn btn-primary btn-sm"
+              hx-get="/admin/dws/status"
+              hx-target="#dws-connection-status"
+              hx-swap="innerHTML"
+              hx-indicator="#status-spinner">
+        <span class="htmx-hide-on-request">🔍 检测连接</span>
+        <span id="status-spinner" class="htmx-indicator">⏳ 检测中...</span>
+      </button>
+      <span class="text-muted text-sm">点击检测钉钉企业管理 API 凭证是否有效</span>
+    </div>
+  </div>
+</div>
+
+{# ---- Enterprise app mode guide ---- #}
+<div class="card">
+  <div class="card-header">🏢 企业内部应用模式（可访问全部审批）</div>
+  <div class="guide-box" style="margin-bottom: 0; border: none; padding: 0;">
+    <h3>如何配置企业内部应用？</h3>
+    <ul>
+      <li>使用 AppKey/AppSecret 获取 access_token，调用钉钉开放平台 <code>/topapi/processinstance/*</code> 接口，可访问<strong>全部审批实例</strong></li>
+      <li>授权后即可在上方「单条/批量查询」中拉取审批流程</li>
+    </ul>
+  </div>
+
+  <div style="margin-top: 16px;">
+    <h4 style="font-size: 14px; margin-bottom: 8px;">📋 配置企业内部应用</h4>
+    <table>
+      <thead>
+        <tr><th style="width: 40px;">#</th><th>步骤</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>1</strong></td>
+          <td>登录钉钉开放平台</td>
+          <td>访问 <a href="https://open-dev.dingtalk.com" target="_blank">open-dev.dingtalk.com</a>，用企业管理员账号登录</td>
+        </tr>
+        <tr>
+          <td><strong>2</strong></td>
+          <td>创建企业内部应用</td>
+          <td>应用开发 → 企业内部开发 → 创建应用 → 填写应用名称（如「InsPilot 审批导入」）</td>
+        </tr>
+        <tr>
+          <td><strong>3</strong></td>
+          <td>获取 AppKey 和 AppSecret</td>
+          <td>进入应用 → 凭证与基础信息 → 复制 AppKey 和 AppSecret</td>
+        </tr>
+        <tr>
+          <td><strong>4</strong></td>
+          <td>申请 API 权限</td>
+          <td>权限管理 → 搜索并开通：<br>
+            <code>审批</code> — 获取审批实例详情 / 获取审批实例ID列表</td>
+        </tr>
+        <tr>
+          <td><strong>5</strong></td>
+          <td>发布应用</td>
+          <td>版本管理与发布 → 确认发布</td>
+        </tr>
+        <tr>
+          <td><strong>6</strong></td>
+          <td>配置 InsPilot</td>
+          <td>在 <code>.env</code> 文件中写入：
+            <pre style="background: #f8fafc; padding: 8px; border-radius: 4px; margin-top: 4px; font-size: 13px;">BUSINESS_ROBOT_DINGTALK_APP_KEY=你的AppKey
+BUSINESS_ROBOT_DINGTALK_APP_SECRET=你的AppSecret</pre>
+          </td>
+        </tr>
+        <tr>
+          <td><strong>7</strong></td>
+          <td>重启服务验证</td>
+          <td>重启 InsPilot 后，点击上方「检测连接」按钮确认状态</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div style="margin-top: 16px;">
+    <h4 style="font-size: 14px; margin-bottom: 8px;">🔑 环境变量</h4>
+    <table>
+      <thead>
+        <tr><th>变量</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>BUSINESS_ROBOT_DINGTALK_APP_KEY</code></td>
+          <td>企业内部应用 AppKey</td>
+        </tr>
+        <tr>
+          <td><code>BUSINESS_ROBOT_DINGTALK_APP_SECRET</code></td>
+          <td>企业内部应用 AppSecret</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+</details>
+
+{% endblock %}

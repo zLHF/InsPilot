@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}知识对话 - InsPilot 云小宝{% endblock %}
+{% block page_title %}知识库对话{% endblock %}
+{% block page_desc %}基于方案知识库的智能问答{% endblock %}
+
+{% block content %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  .chat-wrap { display:flex; flex-direction:column; height:calc(100vh - 200px); min-height:400px; }
+  .chat-msgs { flex:1; overflow-y:auto; padding:8px 4px; }
+  .chat-bubble { max-width:80%; padding:12px 16px; border-radius:12px; margin-bottom:14px; line-height:1.7; font-size:14px; word-wrap:break-word; }
+  .chat-bubble.user { margin-left:auto; background:#3b82f6; color:#fff; border-bottom-right-radius:4px; }
+  .chat-bubble.assistant { margin-right:auto; background:#fff; border:1px solid #e2e8f0; border-bottom-left-radius:4px; }
+  .chat-bubble.assistant h1,.chat-bubble.assistant h2,.chat-bubble.assistant h3 { margin:8px 0 4px; }
+  .chat-bubble.assistant h3 { font-size:15px; color:#1e3a8a; }
+  .chat-bubble.assistant ul,.chat-bubble.assistant ol { margin:4px 0; padding-left:20px; }
+  .chat-bubble.assistant table { border-collapse:collapse; margin:6px 0; font-size:13px; }
+  .chat-bubble.assistant th,.chat-bubble.assistant td { border:1px solid #cbd5e1; padding:4px 8px; }
+  .chat-bubble.assistant th { background:#f1f5f9; }
+  .chat-bubble.assistant p { margin:4px 0; }
+  .chat-bubble.assistant code { background:#f1f5f9; padding:1px 4px; border-radius:3px; font-size:13px; }
+  .chat-bubble.user p { margin:0; }
+  .chat-sources { margin-top:10px; padding-top:8px; border-top:1px dashed #e2e8f0; font-size:12px; }
+  .chat-sources summary { cursor:pointer; color:#64748b; user-select:none; }
+  .chat-sources a { color:#3b82f6; text-decoration:none; }
+  .chat-sources a:hover { text-decoration:underline; }
+  .chat-quick { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+  .chat-quick button { font-size:12px; padding:6px 12px; border-radius:16px; border:1px solid #cbd5e1; background:#fff; color:#475569; cursor:pointer; }
+  .chat-quick button:hover { border-color:#3b82f6; color:#3b82f6; }
+  .chat-input-row { display:flex; gap:10px; padding:12px 0; border-top:1px solid #e2e8f0; }
+  .chat-input-row textarea { flex:1; resize:none; padding:10px 14px; font-size:14px; border:1px solid #cbd5e1; border-radius:8px; outline:none; min-height:44px; max-height:120px; }
+  .chat-input-row textarea:focus { border-color:#3b82f6; box-shadow:0 0 0 3px rgba(59,130,246,.12); }
+  .chat-input-row button { padding:0 20px; font-size:15px; white-space:nowrap; align-self:flex-end; }
+  .chat-typing { display:inline-block; color:#94a3b8; font-size:14px; }
+  .chat-typing span { display:inline-block; width:7px; height:7px; background:#94a3b8; border-radius:50%; margin:0 2px; animation:bounce 1.2s infinite; }
+  .chat-typing span:nth-child(2){animation-delay:.2s}
+  .chat-typing span:nth-child(3){animation-delay:.4s}
+  @keyframes bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-6px)} }
+  .chat-role-label { font-size:11px; color:#94a3b8; margin-bottom:2px; }
+</style>
+
+<div class="chat-wrap">
+  <div class="chat-msgs" id="msgs">
+    <div class="chat-quick" id="quick">
+      <button onclick="quick('衢州有哪些方案？')">衢州有哪些方案？</button>
+      <button onclick="quick('独立出单模式是什么？')">独立出单模式</button>
+      <button onclick="quick('见费出单怎么操作？')">见费出单</button>
+      <button onclick="quick('人保的退保流程是怎样的？')">人保退保流程</button>
+      <button onclick="quick('电子发票怎么申请？')">电子发票</button>
+      <button onclick="quick('CA签章怎么配置？')">CA签章</button>
+    </div>
+  </div>
+
+  <div class="chat-input-row">
+    <textarea id="input" placeholder="输入问题，Enter 发送，Shift+Enter 换行…" rows="1"></textarea>
+    <button class="btn btn-primary" id="send" onclick="doSend()">发送</button>
+  </div>
+</div>
+
+<script>
+const msgsEl = document.getElementById('msgs');
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+const quickEl = document.getElementById('quick');
+// Conversation history carried per-turn (role/content)
+let history = [];
+let busy = false;
+
+// Auto-resize textarea
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+});
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
+});
+
+function quick(q) { inputEl.value = q; doSend(); }
+
+function scrollBottom() { msgsEl.scrollTop = msgsEl.scrollHeight; }
+
+function addBubble(role, html) {
+  const wrap = document.createElement('div');
+  const label = document.createElement('div');
+  label.className = 'chat-role-label';
+  label.textContent = role === 'user' ? '🧑 我' : '🤖 云小宝';
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble ' + role;
+  bubble.innerHTML = html;
+  wrap.appendChild(label);
+  wrap.appendChild(bubble);
+  msgsEl.appendChild(wrap);
+  scrollBottom();
+  return bubble;
+}
+
+function renderMd(text) {
+  try { return marked.parse(text); }
+  catch(e) { return text.replace(/</g,'&lt;'); }
+}
+
+async function doSend() {
+  const q = inputEl.value.trim();
+  if (!q || busy) return;
+  busy = true;
+  sendBtn.disabled = true;
+  if (quickEl) quickEl.style.display = 'none';
+
+  // User bubble
+  addBubble('user', q);
+  history.push({ role: 'user', content: q });
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+
+  // Typing indicator
+  const typing = addBubble('assistant', '<span class="chat-typing"><span></span><span></span><span></span></span> 正在思考…');
+
+  try {
+    const res = await fetch('/chat/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: q, history: history.slice(0, -1) })
+    });
+    const data = await res.json();
+
+    // Replace typing with answer
+    typing.innerHTML = renderMd(data.answer);
+
+    // Sources (collapsible)
+    if (data.sources && data.sources.length) {
+      const srcWrap = document.createElement('div');
+      srcWrap.className = 'chat-sources';
+      const det = document.createElement('details');
+      const sum = document.createElement('summary');
+      sum.textContent = `📎 引用 ${data.sources.length} 个来源`;
+      det.appendChild(sum);
+      const list = document.createElement('div');
+      list.style.marginTop = '6px';
+      data.sources.forEach(s => {
+        const a = document.createElement('a');
+        a.href = '/admin/knowledge/' + s.id;
+        a.target = '_blank';
+        a.style.display = 'block';
+        a.style.margin = '2px 0';
+        const tags = [s.region, s.insurer].filter(x=>x).join(' | ');
+        a.textContent = (tags ? '[' + tags + '] ' : '') + s.title;
+        list.appendChild(a);
+      });
+      det.appendChild(list);
+      srcWrap.appendChild(det);
+      typing.appendChild(srcWrap);
+    }
+
+    history.push({ role: 'assistant', content: data.answer });
+  } catch (e) {
+    typing.innerHTML = '❌ 请求失败：' + e.message;
+  } finally {
+    busy = false;
+    sendBtn.disabled = false;
+    scrollBottom();
+    inputEl.focus();
+  }
+}
+</script>
+{% endblock %}
