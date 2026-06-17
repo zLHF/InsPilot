@@ -164,7 +164,10 @@ def knowledge_page(
     project_id: str = Query(""),
     sensitivity: str = Query(""),
     q: str = Query(""),
+    page: int = Query(1, ge=1),
 ):
+    page_size = 50
+
     def _query():
         with SessionLocal() as session:
             stmt = select(KnowledgeItem).order_by(KnowledgeItem.created_at.desc())
@@ -182,13 +185,27 @@ def knowledge_page(
                     pass
             if q:
                 stmt = stmt.where(KnowledgeItem.title.ilike(f"%{q}%"))
-            items = list(session.scalars(stmt.limit(100)).all())
+            # Total count (before pagination)
+            total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+            # Paginated slice
+            items = list(session.scalars(stmt.offset((page - 1) * page_size).limit(page_size)).all())
             projects = list(session.scalars(select(Project).order_by(Project.name)).all())
-            return items, projects
-    result = _db_query(_query) or ([], [])
-    items, projects = result
-    # Build project name lookup for row template
+            return items, projects, total
+    result = _db_query(_query) or ([], [], 0)
+    items, projects, total = result
     project_names = {str(p.id): p.name for p in projects}
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    # Build a query-string prefix that carries active filters (for pager links)
+    filter_qs_parts = []
+    if q:
+        filter_qs_parts.append(f"q={q}")
+    if status:
+        filter_qs_parts.append(f"status={status}")
+    if project_id:
+        filter_qs_parts.append(f"project_id={project_id}")
+    if sensitivity:
+        filter_qs_parts.append(f"sensitivity={sensitivity}")
+    filter_qs = "&".join(filter_qs_parts)
     return templates.TemplateResponse(
         request,
         "knowledge.html",
@@ -201,6 +218,11 @@ def knowledge_page(
             current_project=project_id,
             current_sensitivity=sensitivity,
             current_query=q,
+            page=page,
+            page_size=page_size,
+            total=total,
+            total_pages=total_pages,
+            filter_qs=filter_qs,
             status_labels=STATUS_LABELS,
             status_colors=STATUS_COLORS,
             sensitivity_labels=SENSITIVITY_LABELS,

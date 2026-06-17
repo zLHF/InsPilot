@@ -44,6 +44,13 @@
 </div>
 
 <div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+    <span class="text-sm text-muted">
+      共 <strong style="color:#0f172a">{{ total }}</strong> 条
+      {% if total_pages > 1 %}· 第 {{ page }}/{{ total_pages }} 页{% endif %}
+      {% if total > 0 %}· 显示 {{ (page-1)*page_size+1 }}-{{ [page*page_size, total]|min }}{% endif %}
+    </span>
+  </div>
   {% if items %}
   <table>
     <thead>
@@ -64,6 +71,29 @@
       {% endfor %}
     </tbody>
   </table>
+  {% if total_pages > 1 %}
+  <div class="pager">
+    {% set base = '/admin/knowledge?' + (filter_qs + '&' if filter_qs else '') + 'page=' %}
+
+    {% if page > 1 %}
+    <a href="{{ base }}{{ page-1 }}" class="pager-btn">← 上一页</a>
+    {% endif %}
+
+    {% for p in range(1, total_pages + 1) %}
+      {% if p == page %}
+      <span class="pager-cur">{{ p }}</span>
+      {% elif p == 1 or p == total_pages or (p >= page-2 and p <= page+2) %}
+      <a href="{{ base }}{{ p }}" class="pager-btn">{{ p }}</a>
+      {% elif p == 2 or p == total_pages-1 %}
+      <span class="pager-ellipsis">…</span>
+      {% endif %}
+    {% endfor %}
+
+    {% if page < total_pages %}
+    <a href="{{ base }}{{ page+1 }}" class="pager-btn">下一页 →</a>
+    {% endif %}
+  </div>
+  {% endif %}
   {% else %}
   <div class="empty-state">
     <div class="icon">📭</div>
@@ -72,4 +102,15 @@
   </div>
   {% endif %}
 </div>
+
+<style>
+  .pager { display:flex; gap:6px; justify-content:center; align-items:center; margin-top:16px; flex-wrap:wrap; }
+  .pager-btn, .pager-cur {
+    display:inline-block; padding:6px 12px; font-size:13px; border-radius:6px;
+    text-decoration:none; border:1px solid #cbd5e1; color:#475569; background:#fff;
+  }
+  .pager-btn:hover { border-color:#3b82f6; color:#3b82f6; }
+  .pager-cur { background:#3b82f6; color:#fff; border-color:#3b82f6; font-weight:600; }
+  .pager-ellipsis { padding:6px 4px; color:#94a3b8; }
+</style>
 {% endblock %}
