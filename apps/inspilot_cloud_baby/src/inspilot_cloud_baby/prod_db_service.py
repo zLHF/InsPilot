@@ -127,7 +127,6 @@ class ProdDBService:
         try:
             import pymssql
             with pymssql.connect(**self._conn_params) as conn:
-                conn.timeout = 10
                 with conn.cursor() as cur:
                     cur.execute(sql_stripped)
                     rows = cur.fetchall()
