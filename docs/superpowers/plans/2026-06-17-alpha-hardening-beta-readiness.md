@@ -42,13 +42,13 @@ Add a short checklist to the backend README:
 ```markdown
 ## Alpha 封板验证
 
-- [ ] 已配置企业内部应用 `BUSINESS_ROBOT_DINGTALK_APP_KEY`
-- [ ] 已配置企业内部应用 `BUSINESS_ROBOT_DINGTALK_APP_SECRET`
-- [ ] `/admin/dws/status` 返回连接成功
-- [ ] 用真实审批实例 ID 完成 `/admin/dws/preview`
-- [ ] 用同一实例完成 `/admin/dws/import`
-- [ ] 导入后的知识条目处于 `pending_review`
-- [ ] 已人工核对表单字段、评论、附件元数据和来源文件名
+- [x] 已配置企业内部应用 `BUSINESS_ROBOT_DINGTALK_APP_KEY`
+- [x] 已配置企业内部应用 `BUSINESS_ROBOT_DINGTALK_APP_SECRET`
+- [x] `/admin/dws/status` 返回连接成功
+- [x] 用真实审批工单号完成 `/admin/dws/preview`
+- [x] 用同一审批实例完成 `/admin/dws/import`
+- [x] 导入后的知识条目进入 `pending_review`，人工审核后为 `active`
+- [x] 已人工核对表单字段、审批链条操作记录和导入来源标识
 ```
 
 - [x] **Step 3: Verify docs contain no active DWS CLI instructions**
@@ -167,31 +167,46 @@ DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m ruff check .
 
 Expected: `All checks passed!`
 
-## Task 5: Remaining Manual Gate
+## Task 5: Real DingTalk Validation Gate
 
 **Files:**
-- No automatic code change.
+- Modify: `apps/inspilot_cloud_baby/README.md`
+- Modify: `docs/superpowers/plans/2026-06-08-inspilot-cloud-baby-alpha.md`
 
-- [ ] **Step 1: Request real DingTalk validation inputs**
+- [x] **Step 1: Confirm real DingTalk validation inputs**
 
-Required from an enterprise admin:
+Validated inputs:
 
 ```text
-BUSINESS_ROBOT_DINGTALK_APP_KEY
-BUSINESS_ROBOT_DINGTALK_APP_SECRET
-One real process instance ID or business ID
+BUSINESS_ROBOT_DINGTALK_APP_KEY configured in settings or environment
+BUSINESS_ROBOT_DINGTALK_APP_SECRET configured in settings or environment
+Business ID: 202605281923000432811
+Resolved process instance ID: pqolozaASbajK5D54JpIPg00861779967423
 ```
 
-- [ ] **Step 2: Run real validation after credentials are available**
+- [x] **Step 2: Run real validation**
 
-Start the backend and validate:
+Backend validation command:
 
 ```bash
 cd apps/inspilot_cloud_baby
-DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m uvicorn inspilot_cloud_baby.main:app --host 127.0.0.1 --port 8000
+curl -sS http://127.0.0.1:8000/admin/dws/status
+curl -sS -X POST http://127.0.0.1:8000/admin/dws/preview \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode 'workflow_id=202605281923000432811'
 ```
 
-Then use `/admin/dws/status`, `/admin/dws/preview`, and `/admin/dws/import`.
+Observed result:
+
+- `/admin/dws/status` returned connected with valid access token.
+- `/admin/dws/preview` resolved the business ID to the process instance ID and rendered the real approval.
+- Preview parsed 29 form fields and 14 operation records.
+- Imported knowledge item `46010940-b027-4771-9608-932cf479a34a` is now reviewed as `active`.
+- `/chat/query` can retrieve the imported knowledge by `西宁市`, `浙江华重融资担保`, and `华重担保`.
+
+Remaining limitation:
+
+- DingTalk standalone comment API currently returns an unavailable/permission error; approval-chain remarks are still captured through operation records. Beta should re-check the `dingtalk.oapi.processinstance.comment.list` permission if independent comment lists become a requirement.
 
 ---
 
