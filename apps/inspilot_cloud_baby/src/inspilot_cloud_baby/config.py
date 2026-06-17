@@ -22,5 +22,10 @@ class Settings(BaseSettings):
     # 向量检索开关
     enable_vector_search: bool = True
 
+    # 对话模型配置（OpenAI 兼容；OpenRouter / DeepSeek / OpenAI 均可）
+    chat_api_key: str = ""       # BUSINESS_ROBOT_CHAT_API_KEY
+    chat_base_url: str = ""      # BUSINESS_ROBOT_CHAT_BASE_URL，如 https://openrouter.ai/api/v1
+    chat_model: str = ""         # BUSINESS_ROBOT_CHAT_MODEL，如 openai/gpt-4o-mini
+
 
 settings = Settings()

@@ -124,6 +124,50 @@
     </div>
   </div>
 
+  <div class="card" style="margin-top:16px;">
+    <div class="card-header">
+      <span>🤖 对话模型配置 <small style="font-weight:normal;color:#94a3b8;">（RAG 回答用）</small></span>
+    </div>
+    <div class="text-sm text-muted mb-2">
+      配置用于对话式回答的大模型（OpenAI 兼容）。支持 OpenRouter / DeepSeek / OpenAI 等。
+      {% if chat_available %}<span class="badge badge-green">✓ 已配置可用</span>{% else %}<span class="badge badge-gray">未配置（对话将降级为列表）</span>{% endif %}
+    </div>
+
+    <div class="form-group">
+      <label for="chat_api_key">API Key</label>
+      <input type="text" id="chat_api_key" name="chat_api_key"
+             placeholder="{{ chat_key_hint }}" autocomplete="off">
+      <div class="text-sm text-muted mt-2">留空 = 保持当前值不变。</div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label for="chat_base_url">Base URL</label>
+        <input type="text" id="chat_base_url" name="chat_base_url"
+               value="{{ chat_base_url }}"
+               placeholder="https://openrouter.ai/api/v1">
+        <div class="text-sm text-muted mt-2">OpenRouter 用 https://openrouter.ai/api/v1。</div>
+      </div>
+      <div class="form-group">
+        <label for="chat_model">模型名称</label>
+        <input type="text" id="chat_model" name="chat_model"
+               value="{{ chat_model }}"
+               placeholder="openai/gpt-4o-mini">
+        <div class="text-sm text-muted mt-2">如 openai/gpt-4o-mini、deepseek/deepseek-chat。</div>
+      </div>
+    </div>
+
+    <button type="button" class="btn btn-outline btn-sm" id="chat-test-btn"
+            hx-post="/admin/settings/chat-test"
+            hx-target="#chat-test-area"
+            hx-swap="innerHTML"
+            hx-indicator="#chat-test-spinner">
+      <span class="htmx-hide-on-request">🧪 测试对话模型</span>
+      <span id="chat-test-spinner" class="htmx-indicator">⏳ 测试中…</span>
+    </button>
+    <div id="chat-test-area" style="margin-top:10px;"></div>
+  </div>
+
   <div style="margin-top:16px; display:flex; gap:12px;">
     <button type="submit" class="btn btn-primary">💾 保存设置</button>
     <a href="/admin/settings" class="btn btn-outline">取消</a>

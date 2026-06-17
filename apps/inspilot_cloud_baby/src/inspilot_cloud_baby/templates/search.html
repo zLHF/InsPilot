@@ -1,179 +1,165 @@
 {% extends "base.html" %}
-{% block title %}检索测试 - InsPilot 云小宝{% endblock %}
-{% block page_title %}知识库检索测试{% endblock %}
-{% block page_desc %}输入业务问题，从已导入的方案库中语义检索{% endblock %}
+{% block title %}知识对话 - InsPilot 云小宝{% endblock %}
+{% block page_title %}知识库对话{% endblock %}
+{% block page_desc %}基于方案知识库的智能问答{% endblock %}
 
 {% block content %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
-  .search-box {
-    display: flex; gap: 10px; margin-bottom: 16px; position: sticky; top: 8px;
-    background: var(--bg, #f8fafc); padding: 12px 0; z-index: 10;
-  }
-  .search-box input {
-    flex: 1; padding: 11px 14px; font-size: 15px; border: 1px solid #cbd5e1;
-    border-radius: 8px; outline: none;
-  }
-  .search-box input:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15); }
-  .search-box button {
-    padding: 0 22px; font-size: 15px; white-space: nowrap;
-  }
-  .src-card {
-    border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px;
-    margin-bottom: 10px; background: #fff; transition: box-shadow .15s;
-  }
-  .src-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.06); }
-  .src-title { font-weight: 600; font-size: 15px; color: #0f172a; margin-bottom: 6px; }
-  .src-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-  .src-tags .tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
-  .tag-region { background: #dbeafe; color: #1e40af; }
-  .tag-insurer { background: #dcfce7; color: #166534; }
-  .tag-integ { background: #fef3c7; color: #92400e; }
-  .tag-date { background: #f1f5f9; color: #475569; }
-  .tag-type { background: #ede9fe; color: #5b21b6; }
-  .src-preview { font-size: 13px; color: #64748b; line-height: 1.6; }
-  .src-preview mark { background: #fef08a; color: #713f12; padding: 0 2px; border-radius: 2px; }
-  .src-rank { display:inline-block; width:22px; height:22px; line-height:22px; text-align:center;
-    border-radius:50%; background:#3b82f6; color:#fff; font-size:11px; margin-right:8px; }
-  .empty-state { text-align:center; padding: 48px 20px; color: #94a3b8; }
-  .spinner { display:inline-block; width:16px; height:16px; border:2px solid #cbd5e1;
-    border-top-color:#3b82f6; border-radius:50%; animation: spin .7s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .suggestions { margin-top: 14px; }
-  .suggestions button {
-    font-size: 12px; padding: 4px 10px; margin: 0 6px 6px 0;
-    border-radius: 12px; border: 1px solid #cbd5e1; background: #fff; color: #475569;
-    cursor: pointer;
-  }
-  .suggestions button:hover { border-color: #3b82f6; color: #3b82f6; }
-  .filter-row { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
-  .filter-row select {
-    padding:6px 10px; font-size:13px; border:1px solid #cbd5e1;
-    border-radius:6px; background:#fff; color:#334155; outline:none; min-width:120px;
-  }
-  .filter-row select:focus { border-color:#3b82f6; }
-  .filter-hint { font-size:12px; color:#94a3b8; }
+  .chat-wrap { display:flex; flex-direction:column; height:calc(100vh - 200px); min-height:400px; }
+  .chat-msgs { flex:1; overflow-y:auto; padding:8px 4px; }
+  .chat-bubble { max-width:80%; padding:12px 16px; border-radius:12px; margin-bottom:14px; line-height:1.7; font-size:14px; word-wrap:break-word; }
+  .chat-bubble.user { margin-left:auto; background:#3b82f6; color:#fff; border-bottom-right-radius:4px; }
+  .chat-bubble.assistant { margin-right:auto; background:#fff; border:1px solid #e2e8f0; border-bottom-left-radius:4px; }
+  .chat-bubble.assistant h1,.chat-bubble.assistant h2,.chat-bubble.assistant h3 { margin:8px 0 4px; }
+  .chat-bubble.assistant h3 { font-size:15px; color:#1e3a8a; }
+  .chat-bubble.assistant ul,.chat-bubble.assistant ol { margin:4px 0; padding-left:20px; }
+  .chat-bubble.assistant table { border-collapse:collapse; margin:6px 0; font-size:13px; }
+  .chat-bubble.assistant th,.chat-bubble.assistant td { border:1px solid #cbd5e1; padding:4px 8px; }
+  .chat-bubble.assistant th { background:#f1f5f9; }
+  .chat-bubble.assistant p { margin:4px 0; }
+  .chat-bubble.assistant code { background:#f1f5f9; padding:1px 4px; border-radius:3px; font-size:13px; }
+  .chat-bubble.user p { margin:0; }
+  .chat-sources { margin-top:10px; padding-top:8px; border-top:1px dashed #e2e8f0; font-size:12px; }
+  .chat-sources summary { cursor:pointer; color:#64748b; user-select:none; }
+  .chat-sources a { color:#3b82f6; text-decoration:none; }
+  .chat-sources a:hover { text-decoration:underline; }
+  .chat-quick { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+  .chat-quick button { font-size:12px; padding:6px 12px; border-radius:16px; border:1px solid #cbd5e1; background:#fff; color:#475569; cursor:pointer; }
+  .chat-quick button:hover { border-color:#3b82f6; color:#3b82f6; }
+  .chat-input-row { display:flex; gap:10px; padding:12px 0; border-top:1px solid #e2e8f0; }
+  .chat-input-row textarea { flex:1; resize:none; padding:10px 14px; font-size:14px; border:1px solid #cbd5e1; border-radius:8px; outline:none; min-height:44px; max-height:120px; }
+  .chat-input-row textarea:focus { border-color:#3b82f6; box-shadow:0 0 0 3px rgba(59,130,246,.12); }
+  .chat-input-row button { padding:0 20px; font-size:15px; white-space:nowrap; align-self:flex-end; }
+  .chat-typing { display:inline-block; color:#94a3b8; font-size:14px; }
+  .chat-typing span { display:inline-block; width:7px; height:7px; background:#94a3b8; border-radius:50%; margin:0 2px; animation:bounce 1.2s infinite; }
+  .chat-typing span:nth-child(2){animation-delay:.2s}
+  .chat-typing span:nth-child(3){animation-delay:.4s}
+  @keyframes bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-6px)} }
+  .chat-role-label { font-size:11px; color:#94a3b8; margin-bottom:2px; }
 </style>
 
-<div class="search-box">
-  <input type="text" id="q" placeholder="试试：福建人保退保流程 / 见费出单 / 独立出单模式 / 绵阳国寿财…" autofocus>
-  <button class="btn btn-primary" id="go" onclick="doSearch()">🔍 检索</button>
-</div>
+<div class="chat-wrap">
+  <div class="chat-msgs" id="msgs">
+    <div class="chat-quick" id="quick">
+      <button onclick="quick('衢州有哪些方案？')">衢州有哪些方案？</button>
+      <button onclick="quick('独立出单模式是什么？')">独立出单模式</button>
+      <button onclick="quick('见费出单怎么操作？')">见费出单</button>
+      <button onclick="quick('人保的退保流程是怎样的？')">人保退保流程</button>
+      <button onclick="quick('电子发票怎么申请？')">电子发票</button>
+      <button onclick="quick('CA签章怎么配置？')">CA签章</button>
+    </div>
+  </div>
 
-<div class="filter-row" id="filters">
-  <select id="f-region"><option value="">全部地区</option></select>
-  <select id="f-insurer"><option value="">全部保司</option></select>
-  <select id="f-integrator"><option value="">全部集成商</option></select>
-  <span class="filter-hint">💡 不选则自动从问题里识别地区/保司</span>
+  <div class="chat-input-row">
+    <textarea id="input" placeholder="输入问题，Enter 发送，Shift+Enter 换行…" rows="1"></textarea>
+    <button class="btn btn-primary" id="send" onclick="doSend()">发送</button>
+  </div>
 </div>
-
-<div class="suggestions" id="sugs">
-  <button onclick="quick('独立出单模式有哪些方案')">独立出单模式</button>
-  <button onclick="quick('见费出单是什么方案')">见费出单</button>
-  <button onclick="quick('福建人保退保流程')">福建人保退保</button>
-  <button onclick="quick('退保怎么操作')">退保操作</button>
-  <button onclick="quick('电子发票怎么申请')">电子发票</button>
-  <button onclick="quick('绵阳的方案')">绵阳方案</button>
-  <button onclick="quick('CA签章')">CA签章</button>
-</div>
-
-<div id="results"></div>
 
 <script>
-const inp = document.getElementById('q');
-const btn = document.getElementById('go');
-const out = document.getElementById('results');
-const sugs = document.getElementById('sugs');
-inp.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+const msgsEl = document.getElementById('msgs');
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+const quickEl = document.getElementById('quick');
+// Conversation history carried per-turn (role/content)
+let history = [];
+let busy = false;
 
-function quick(q){ inp.value = q; doSearch(); }
+// Auto-resize textarea
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+});
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
+});
 
-function badge(cls, label, val){
-  return val ? `<span class="tag ${cls}">${label}${val}</span>` : '';
+function quick(q) { inputEl.value = q; doSend(); }
+
+function scrollBottom() { msgsEl.scrollTop = msgsEl.scrollHeight; }
+
+function addBubble(role, html) {
+  const wrap = document.createElement('div');
+  const label = document.createElement('div');
+  label.className = 'chat-role-label';
+  label.textContent = role === 'user' ? '🧑 我' : '🤖 云小宝';
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble ' + role;
+  bubble.innerHTML = html;
+  wrap.appendChild(label);
+  wrap.appendChild(bubble);
+  msgsEl.appendChild(wrap);
+  scrollBottom();
+  return bubble;
 }
 
-function highlight(text, query){
-  if(!text) return '';
-  let t = text.replace(/</g,'&lt;');
-  for(const term of query.split(/\s+/).filter(s=>s)){
-    t = t.split(term).join('<mark>'+term+'</mark>');
-  }
-  return t;
+function renderMd(text) {
+  try { return marked.parse(text); }
+  catch(e) { return text.replace(/</g,'&lt;'); }
 }
 
-async function doSearch(){
-  const q = inp.value.trim();
-  if(!q) return;
-  sugs.style.display = 'none';
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
-  out.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:10px">正在检索…</p></div>';
-  const payload = {query: q};
-  const region = document.getElementById('f-region').value;
-  const insurer = document.getElementById('f-insurer').value;
-  const integrator = document.getElementById('f-integrator').value;
-  if(region) payload.region = region;
-  if(insurer) payload.insurer = insurer;
-  if(integrator) payload.integrator = integrator;
-  try{
+async function doSend() {
+  const q = inputEl.value.trim();
+  if (!q || busy) return;
+  busy = true;
+  sendBtn.disabled = true;
+  if (quickEl) quickEl.style.display = 'none';
+
+  // User bubble
+  addBubble('user', q);
+  history.push({ role: 'user', content: q });
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+
+  // Typing indicator
+  const typing = addBubble('assistant', '<span class="chat-typing"><span></span><span></span><span></span></span> 正在思考…');
+
+  try {
     const res = await fetch('/chat/query', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(payload)
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: q, history: history.slice(0, -1) })
     });
     const data = await res.json();
-    render(data, q);
-  }catch(e){
-    out.innerHTML = '<div class="empty-state">❌ 请求失败：'+e.message+'</div>';
-  }finally{
-    btn.disabled = false; btn.textContent = '🔍 检索';
-  }
-}
 
-function render(data, q){
-  const items = data.sources || [];
-  if(!items.length){
-    out.innerHTML = `<div class="empty-state"><div style="font-size:40px">🔍</div>
-      <h3>未找到「${q}」相关知识</h3>
-      <p>换个说法试试，或检查知识库是否已导入。</p></div>`;
-    return;
-  }
-  let html = `<div style="margin:8px 0 14px;color:#64748b;font-size:13px">
-    找到 <strong style="color:#0f172a">${data.count}</strong> 条相关方案 · 按语义相似度排序</div>`;
-  items.forEach((s, i) => {
-    const tags = [
-      s.region      ? badge('tag-region','📍 ',s.region) : '',
-      s.insurer     ? badge('tag-insurer','🏥 ',s.insurer) : '',
-      s.integrator  ? badge('tag-integ','🔧 ',s.integrator) : '',
-      s.doc_date    ? badge('tag-date','📅 ',s.doc_date) : '',
-      s.source_type ? badge('tag-type','🗂 ',s.source_type) : '',
-    ].join('');
-    html += `<div class="src-card">
-      <div class="src-title"><span class="src-rank">${i+1}</span>${s.title}</div>
-      <div class="src-tags">${tags}</div>
-      <div class="src-preview">${highlight(s.preview, q)}</div>
-      <div style="margin-top:8px;">
-        <a href="/admin/knowledge/${s.id}" target="_blank"
-           style="font-size:12px;color:#3b82f6;text-decoration:none;">📄 查看详情 →</a>
-      </div>
-    </div>`;
-  });
-  out.innerHTML = html;
-}
+    // Replace typing with answer
+    typing.innerHTML = renderMd(data.answer);
 
-// Load filter dropdown options on page load
-(async function loadFacets(){
-  try{
-    const res = await fetch('/admin/search/facets');
-    const f = await res.json();
-    const fill = (id, vals) => {
-      const sel = document.getElementById(id);
-      vals.forEach(v => {
-        const o = document.createElement('option'); o.value = v; o.textContent = v;
-        sel.appendChild(o);
+    // Sources (collapsible)
+    if (data.sources && data.sources.length) {
+      const srcWrap = document.createElement('div');
+      srcWrap.className = 'chat-sources';
+      const det = document.createElement('details');
+      const sum = document.createElement('summary');
+      sum.textContent = `📎 引用 ${data.sources.length} 个来源`;
+      det.appendChild(sum);
+      const list = document.createElement('div');
+      list.style.marginTop = '6px';
+      data.sources.forEach(s => {
+        const a = document.createElement('a');
+        a.href = '/admin/knowledge/' + s.id;
+        a.target = '_blank';
+        a.style.display = 'block';
+        a.style.margin = '2px 0';
+        const tags = [s.region, s.insurer].filter(x=>x).join(' | ');
+        a.textContent = (tags ? '[' + tags + '] ' : '') + s.title;
+        list.appendChild(a);
       });
-    };
-    fill('f-region', f.regions || []);
-    fill('f-insurer', f.insurers || []);
-    fill('f-integrator', f.integrators || []);
-  }catch(e){ console.warn('facets load failed', e); }
-})();
+      det.appendChild(list);
+      srcWrap.appendChild(det);
+      typing.appendChild(srcWrap);
+    }
+
+    history.push({ role: 'assistant', content: data.answer });
+  } catch (e) {
+    typing.innerHTML = '❌ 请求失败：' + e.message;
+  } finally {
+    busy = false;
+    sendBtn.disabled = false;
+    scrollBottom();
+    inputEl.focus();
+  }
+}
 </script>
 {% endblock %}

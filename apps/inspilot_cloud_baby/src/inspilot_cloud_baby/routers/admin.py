@@ -883,6 +883,9 @@ _SETTINGS_KEYS = [
     "openai_base_url",
     "openai_embedding_model",
     "enable_vector_search",
+    "chat_api_key",
+    "chat_base_url",
+    "chat_model",
 ]
 
 
@@ -931,6 +934,16 @@ def settings_page(request: Request, saved: str = ""):
     current_base_url = db_settings.get("openai_base_url", "")
     current_model = db_settings.get("openai_embedding_model", settings.openai_embedding_model)
 
+    # Chat model status
+    from inspilot_cloud_baby.chat_service import get_chat_service
+    chat_svc = get_chat_service()
+    if settings.chat_api_key:
+        chat_key_source, chat_key_hint = "env", "当前使用环境变量配置"
+    elif db_settings.get("chat_api_key"):
+        chat_key_source, chat_key_hint = "db", "****" + db_settings["chat_api_key"][-4:]
+    else:
+        chat_key_source, chat_key_hint = "none", "未配置"
+
     return templates.TemplateResponse(
         request, "settings.html",
         _ctx(
@@ -944,6 +957,11 @@ def settings_page(request: Request, saved: str = ""):
             current_model=current_model,
             embedded_count=stats["embedded"],
             total_count=stats["total"],
+            chat_available=chat_svc.available,
+            chat_key_source=chat_key_source,
+            chat_key_hint=chat_key_hint,
+            chat_base_url=db_settings.get("chat_base_url", ""),
+            chat_model=db_settings.get("chat_model", ""),
         ),
     )
 
@@ -955,8 +973,11 @@ def settings_save(
     openai_base_url: str = Form(""),
     openai_embedding_model: str = Form(""),
     enable_vector_search: str = Form(""),
+    chat_api_key: str = Form(""),
+    chat_base_url: str = Form(""),
+    chat_model: str = Form(""),
 ):
-    """Save settings to DB and reload embedding service.
+    """Save settings to DB and reload embedding + chat services.
 
     Unlike most admin handlers, this does NOT swallow DB errors — if the save
     fails the user is shown the error so it isn't silently lost.
@@ -976,6 +997,13 @@ def settings_save(
             if openai_embedding_model.strip():
                 _save_setting(session, "openai_embedding_model", openai_embedding_model.strip())
             _save_setting(session, "enable_vector_search", "true" if enable_vector_search else "false")
+            # Chat model settings
+            if chat_api_key.strip():
+                _save_setting(session, "chat_api_key", chat_api_key.strip())
+            if chat_base_url.strip():
+                _save_setting(session, "chat_base_url", chat_base_url.strip())
+            if chat_model.strip():
+                _save_setting(session, "chat_model", chat_model.strip())
             session.commit()
 
     try:
@@ -988,8 +1016,10 @@ def settings_save(
             _settings_ctx(request, error=f"保存失败：{exc}"),
         )
 
-    # Hot-reload: reset the singleton so next call picks up new config
+    # Hot-reload: reset singletons so next call picks up new config
+    import inspilot_cloud_baby.chat_service as chat_mod
     import inspilot_cloud_baby.embedding as emb_mod
+    chat_mod._service = None
     emb_mod._service = None
 
     # Redirect to GET to show the saved state (PRG pattern)
@@ -1013,6 +1043,16 @@ def _settings_ctx(request: Request, error: str = "") -> dict:
     svc = get_embedding_service()
     stats = _db_query(_count_embedding_stats) or {"embedded": 0, "total": 0}
 
+    # Chat model config for display
+    from inspilot_cloud_baby.chat_service import get_chat_service
+    chat_svc = get_chat_service()
+    if settings.chat_api_key:
+        chat_key_source, chat_key_hint = "env", "当前使用环境变量配置"
+    elif db_settings.get("chat_api_key"):
+        chat_key_source, chat_key_hint = "db", "****" + db_settings["chat_api_key"][-4:]
+    else:
+        chat_key_source, chat_key_hint = "none", "未配置"
+
     return _ctx(
         request,
         saved=False,
@@ -1025,6 +1065,11 @@ def _settings_ctx(request: Request, error: str = "") -> dict:
         current_model=db_settings.get("openai_embedding_model", settings.openai_embedding_model),
         embedded_count=stats["embedded"],
         total_count=stats["total"],
+        chat_available=chat_svc.available,
+        chat_key_source=chat_key_source,
+        chat_key_hint=chat_key_hint,
+        chat_base_url=db_settings.get("chat_base_url", ""),
+        chat_model=db_settings.get("chat_model", ""),
     )
 
 
@@ -1080,6 +1125,56 @@ def settings_test(request: Request):
                 "连接失败（3 次重试均失败）。请检查：API Key 是否正确、Base URL 是否可达、"
                 "模型名是否被该服务商支持。详细错误见服务端日志。"
             ),
+            test_endpoint=endpoint,
+            test_model=model,
+        ),
+    )
+
+
+@router.post("/settings/chat-test")
+def settings_chat_test(request: Request):
+    """Test the chat model connection using the CURRENTLY SAVED config."""
+    from inspilot_cloud_baby.chat_service import ChatService, get_chat_config
+
+    cfg = get_chat_config()
+    api_key = cfg["api_key"]
+    base_url = cfg["base_url"]
+    model = cfg["model"]
+
+    if not api_key:
+        return templates.TemplateResponse(
+            request,
+            "partials/_settings_test.html",
+            _ctx(request, test_ok=False, test_message="未配置对话模型 API Key。请先填写并保存。"),
+        )
+    if not model:
+        return templates.TemplateResponse(
+            request,
+            "partials/_settings_test.html",
+            _ctx(request, test_ok=False, test_message="未配置对话模型名称（如 openai/gpt-4o-mini）。请先填写并保存。"),
+        )
+
+    svc = ChatService(api_key=api_key, base_url=base_url, model=model)
+    reply = svc.chat([{"role": "user", "content": "你好，请回复「对话模型连接正常」。"}])
+
+    endpoint = base_url or "https://api.openai.com/v1 (官方)"
+    if reply:
+        snippet = reply.strip()[:60]
+        return templates.TemplateResponse(
+            request,
+            "partials/_settings_test.html",
+            _ctx(
+                request, test_ok=True,
+                test_message=f"连接成功。模型 {model} 回复：{snippet}",
+                test_endpoint=endpoint,
+            ),
+        )
+    return templates.TemplateResponse(
+        request,
+        "partials/_settings_test.html",
+        _ctx(
+            request, test_ok=False,
+            test_message="连接失败（3 次重试均失败）。请检查 API Key、Base URL、模型名是否正确。",
             test_endpoint=endpoint,
             test_model=model,
         ),
