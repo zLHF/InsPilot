@@ -4,6 +4,31 @@
 {% block page_desc %}查看和管理所有知识条目，审核待处理的资料{% endblock %}
 
 {% block content %}
+{% set base = '/admin/knowledge?' + (filter_qs + '&' if filter_qs else '') + 'page=' %}
+
+{# pager macro — reused above and below the table #}
+{% macro pager() %}
+  {% if total_pages > 1 %}
+  <div class="pager">
+    {% if page > 1 %}
+    <a href="{{ base }}{{ page-1 }}" class="pager-btn">← 上一页</a>
+    {% endif %}
+    {% for p in range(1, total_pages + 1) %}
+      {% if p == page %}
+      <span class="pager-cur">{{ p }}</span>
+      {% elif p == 1 or p == total_pages or (p >= page-2 and p <= page+2) %}
+      <a href="{{ base }}{{ p }}" class="pager-btn">{{ p }}</a>
+      {% elif p == 2 or p == total_pages-1 %}
+      <span class="pager-ellipsis">…</span>
+      {% endif %}
+    {% endfor %}
+    {% if page < total_pages %}
+    <a href="{{ base }}{{ page+1 }}" class="pager-btn">下一页 →</a>
+    {% endif %}
+  </div>
+  {% endif %}
+{% endmacro %}
+
 <div class="guide-box">
   <h3>📖 知识管理说明</h3>
   <ul>
@@ -40,17 +65,22 @@
     </select>
     <button type="submit" class="btn btn-primary btn-sm">🔍 筛选</button>
     <a href="/admin/knowledge" class="btn btn-outline btn-sm">重置</a>
+    <input type="hidden" name="page_size" value="{{ page_size }}">
+    <span class="text-sm text-muted" style="margin-left:auto;">
+      共 <strong style="color:#0f172a">{{ total }}</strong> 条
+      {% if total_pages > 1 %}· 第 {{ page }}/{{ total_pages }} 页{% endif %}
+      {% if total > 0 %}· 显示 {{ (page-1)*page_size+1 }}-{{ [page*page_size, total]|min }}{% endif %}
+      <select id="page-size-sel" style="margin-left:8px;" onchange="changePageSize(this.value)">
+        <option value="20" {{ 'selected' if page_size == 20 else '' }}>20 条/页</option>
+        <option value="50" {{ 'selected' if page_size == 50 else '' }}>50 条/页</option>
+        <option value="100" {{ 'selected' if page_size == 100 else '' }}>100 条/页</option>
+      </select>
+    </span>
   </form>
 </div>
 
 <div class="card">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
-    <span class="text-sm text-muted">
-      共 <strong style="color:#0f172a">{{ total }}</strong> 条
-      {% if total_pages > 1 %}· 第 {{ page }}/{{ total_pages }} 页{% endif %}
-      {% if total > 0 %}· 显示 {{ (page-1)*page_size+1 }}-{{ [page*page_size, total]|min }}{% endif %}
-    </span>
-  </div>
+  {{ pager() }}
   {% if items %}
   <table>
     <thead>
@@ -71,29 +101,6 @@
       {% endfor %}
     </tbody>
   </table>
-  {% if total_pages > 1 %}
-  <div class="pager">
-    {% set base = '/admin/knowledge?' + (filter_qs + '&' if filter_qs else '') + 'page=' %}
-
-    {% if page > 1 %}
-    <a href="{{ base }}{{ page-1 }}" class="pager-btn">← 上一页</a>
-    {% endif %}
-
-    {% for p in range(1, total_pages + 1) %}
-      {% if p == page %}
-      <span class="pager-cur">{{ p }}</span>
-      {% elif p == 1 or p == total_pages or (p >= page-2 and p <= page+2) %}
-      <a href="{{ base }}{{ p }}" class="pager-btn">{{ p }}</a>
-      {% elif p == 2 or p == total_pages-1 %}
-      <span class="pager-ellipsis">…</span>
-      {% endif %}
-    {% endfor %}
-
-    {% if page < total_pages %}
-    <a href="{{ base }}{{ page+1 }}" class="pager-btn">下一页 →</a>
-    {% endif %}
-  </div>
-  {% endif %}
   {% else %}
   <div class="empty-state">
     <div class="icon">📭</div>
@@ -101,10 +108,26 @@
     <p class="text-muted">前往 <a href="/admin/ingest">资料投喂</a> 添加第一批资料</p>
   </div>
   {% endif %}
+  {{ pager() }}
 </div>
 
+<script>
+function changePageSize(size){
+  // keep current filters, reset to page 1 with new size
+  const u = new URL('/admin/knowledge', location.origin);
+  {% if current_query %}u.searchParams.set('q', {{ current_query|tojson }});{% endif %}
+  {% if current_status %}u.searchParams.set('status', {{ current_status|tojson }});{% endif %}
+  {% if current_project %}u.searchParams.set('project_id', {{ current_project|tojson }});{% endif %}
+  {% if current_sensitivity %}u.searchParams.set('sensitivity', {{ current_sensitivity|tojson }});{% endif %}
+  u.searchParams.set('page_size', size);
+  location.href = u.toString();
+}
+</script>
+
 <style>
-  .pager { display:flex; gap:6px; justify-content:center; align-items:center; margin-top:16px; flex-wrap:wrap; }
+  .pager { display:flex; gap:6px; justify-content:center; align-items:center; flex-wrap:wrap; }
+  .pager:first-child { margin-bottom:12px; }
+  .pager:last-child { margin-top:16px; }
   .pager-btn, .pager-cur {
     display:inline-block; padding:6px 12px; font-size:13px; border-radius:6px;
     text-decoration:none; border:1px solid #cbd5e1; color:#475569; background:#fff;

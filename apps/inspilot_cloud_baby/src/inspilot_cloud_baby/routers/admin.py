@@ -165,8 +165,8 @@ def knowledge_page(
     sensitivity: str = Query(""),
     q: str = Query(""),
     page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
 ):
-    page_size = 50
 
     def _query():
         with SessionLocal() as session:
@@ -205,6 +205,8 @@ def knowledge_page(
         filter_qs_parts.append(f"project_id={project_id}")
     if sensitivity:
         filter_qs_parts.append(f"sensitivity={sensitivity}")
+    if page_size != 20:
+        filter_qs_parts.append(f"page_size={page_size}")
     filter_qs = "&".join(filter_qs_parts)
     return templates.TemplateResponse(
         request,
