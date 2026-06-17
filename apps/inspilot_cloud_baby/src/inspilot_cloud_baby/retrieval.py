@@ -127,8 +127,11 @@ def _extract_query_filters(*, query: str, db: Session) -> dict:
             filters["integrator"] = integ
             break
 
-    # Region (substring against known DB values, longest-first to avoid
-    # e.g. "杭州" matching when "杭州市" is the stored value)
+    # Region: match the longest known region that appears in the query
+    # (direct substring). Longest-first avoids e.g. "杭州" winning over
+    # "杭州市". This handles parent→child (衢州→衢州市) at the SQL layer
+    # via prefix matching; child→parent (常山→衢州常山) is a rare edge case
+    # left to the vector fallback.
     for region in _load_known_regions(db):
         if region and region in query:
             filters["region"] = region
@@ -179,13 +182,23 @@ def _score(*, document: KnowledgeDocument, terms: list[str]) -> int:
 
 
 def _metadata_filter_clauses(filters: dict) -> list:
-    """Build SQLAlchemy where-clauses for metadata_json filters (region/insurer/integrator)."""
+    """Build SQLAlchemy where-clauses for metadata_json filters (region/insurer/integrator).
+
+    Region uses prefix matching (衢州 matches 衢州市 / 衢州常山) to bridge
+    parent/child parsing variants. Insurer/integrator use exact match
+    (controlled vocabularies).
+    """
     clauses = []
     for key in ("region", "insurer", "integrator"):
         val = filters.get(key)
-        if val:
-            # metadata_json ->> 'key' = 'value'  (JSONB text extraction)
-            clauses.append(func.cast(KnowledgeItem.metadata_json.op("->>")(key), String) == val)
+        if not val:
+            continue
+        col = func.cast(KnowledgeItem.metadata_json.op("->>")(key), String)
+        if key == "region":
+            # Prefix match: '衢州' → '衢州%' catches 衢州市 / 衢州常山
+            clauses.append(col.like(val + "%"))
+        else:
+            clauses.append(col == val)
     return clauses
 
 
