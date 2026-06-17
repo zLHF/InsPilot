@@ -128,6 +128,10 @@ function render(data, q){
       <div class="src-title"><span class="src-rank">${i+1}</span>${s.title}</div>
       <div class="src-tags">${tags}</div>
       <div class="src-preview">${highlight(s.preview, q)}</div>
+      <div style="margin-top:8px;">
+        <a href="/admin/knowledge/${s.id}" target="_blank"
+           style="font-size:12px;color:#3b82f6;text-decoration:none;">📄 查看详情 →</a>
+      </div>
     </div>`;
   });
   out.innerHTML = html;

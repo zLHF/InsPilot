@@ -241,6 +241,99 @@ def search_page(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Plan detail — structured rendering of a scheme's body
+# ---------------------------------------------------------------------------
+
+# Known section titles inside a CS3.0 plan body (rendered as sub-headings).
+_PLAN_SECTIONS = {
+    "密文话术模板", "明文话术模板", "客户端退保说明", "业务模式说明",
+    "中心对接标准", "平台对接模式", "平台对接", "客户端配置说明",
+    "收款账户", "保司端方案说明", "项目基础信息", "操作记录",
+    "退保审批单", "转账授权书", "专票确认函", "投保单模板",
+    "关闭诉求1", "关闭诉求2", "单证说明", "方案依据", "方案说明",
+    "中心平台操作页面流程", "平台订单申请调研", "中心平台功能调研",
+}
+
+
+def _is_section_title(line: str) -> bool:
+    """True if a line is a known plan section heading (exact-ish match)."""
+    return line in _PLAN_SECTIONS or any(line.startswith(s) for s in _PLAN_SECTIONS)
+
+
+def format_plan_body(body: str) -> str:
+    """Convert a plan's plain-text body into structured HTML for display.
+
+    Rules:
+      - known section titles → <h3> heading
+      - 《...》 document names → heading
+      - "key：value" (key ≤ 12 chars) → definition row
+      - everything else → paragraph
+    """
+    import html as html_mod
+    import re
+
+    if not body:
+        return ""
+
+    # Split into lines, drop empty/BOM noise
+    raw_lines = body.split("\n")
+    lines = [ln.strip() for ln in raw_lines if ln.strip() and ln.strip() != "\ufeff"]
+
+    out: list[str] = []
+    kv_re = re.compile(r"^(.{1,12})[：:](.+)$")
+    doc_re = re.compile(r"^《.+》")
+
+    for ln in lines:
+        esc = html_mod.escape(ln)
+        if _is_section_title(ln):
+            out.append(f'<h3 class="plan-section">{esc}</h3>')
+        elif doc_re.match(ln):
+            out.append(f'<h4 class="plan-doc">{esc}</h4>')
+        else:
+            m = kv_re.match(ln)
+            if m and not _is_section_title(m.group(1)):
+                key = html_mod.escape(m.group(1))
+                val = html_mod.escape(m.group(2).strip())
+                out.append(f'<div class="plan-kv"><span class="plan-k">{key}：</span><span class="plan-v">{val}</span></div>')
+            else:
+                out.append(f"<p>{esc}</p>")
+
+    return "\n".join(out)
+
+
+@router.get("/knowledge/{item_id}")
+def knowledge_detail(request: Request, item_id: str):
+    """Read-only detail view of a single knowledge item / scheme."""
+    import uuid as uuid_mod
+
+    def _query():
+        with SessionLocal() as session:
+            return session.get(KnowledgeItem, uuid_mod.UUID(item_id))
+
+    item = _db_query(_query)
+    if not item:
+        return templates.TemplateResponse(
+            request,
+            "knowledge_detail.html",
+            _ctx(request, item=None, item_id=item_id, body_html=""),
+            status_code=404,
+        )
+
+    body_html = format_plan_body(item.body)
+    return templates.TemplateResponse(
+        request,
+        "knowledge_detail.html",
+        _ctx(
+            request,
+            item=item,
+            item_id=item_id,
+            body_html=body_html,
+            meta=item.metadata_json or {},
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # HTMX partials / API
 # ---------------------------------------------------------------------------
 
