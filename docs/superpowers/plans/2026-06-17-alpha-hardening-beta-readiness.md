@@ -195,6 +195,42 @@ Then use `/admin/dws/status`, `/admin/dws/preview`, and `/admin/dws/import`.
 
 ---
 
+## Beta Search Architecture Note
+
+**Decision:** Do not treat the vector database as the only search engine. InsPilot search must use hybrid retrieval.
+
+**Current Alpha posture:** Keep the lightweight in-process stack:
+
+- PostgreSQL exact keyword recall over title/body for field-like queries such as city, institution, approval ID, business ID, and DingTalk form values.
+- pgvector semantic recall for fuzzy business questions and similar scheme discovery.
+- Merge and deduplicate recall results before applying LLM synthesis.
+- Keep permission/status filtering in the retrieval path before results are exposed to the prompt.
+
+**Reason:** DingTalk approvals and insurance project documents contain many exact business identifiers, including city names, institution names, rates, product types, record IDs, and approval-chain remarks. Vector similarity alone is not reliable enough for these exact-match requirements, and prompt changes cannot recover records that were never retrieved into context.
+
+**Beta trigger for Elasticsearch/OpenSearch:** Introduce Elasticsearch/OpenSearch as the first retrieval channel when any of these become material:
+
+- Knowledge volume grows enough that PostgreSQL `ILIKE` recall is slow or hard to rank.
+- Users need highlighted snippets, Chinese word segmentation, synonyms, field boosting, or typo tolerance.
+- Search needs richer structured filters across source type, region, institution, product type, approval status, date range, and project visibility.
+- Reranking needs a broader candidate pool than PostgreSQL + pgvector can cheaply provide.
+
+**Target Beta+ shape:**
+
+```text
+Query
+  -> Elasticsearch/OpenSearch exact + full-text recall
+  -> pgvector semantic recall
+  -> merge + dedupe
+  -> rerank
+  -> permission/status filtering
+  -> RAG prompt synthesis
+```
+
+Open question for Beta planning: decide whether to use self-hosted Elasticsearch/OpenSearch, managed cloud search, or PostgreSQL full-text search as an intermediate step before introducing another service.
+
+---
+
 ## Self-Review
 
 - Spec coverage: This plan covers the remaining Alpha manual gate and the first Beta readiness foundations from PRD v2.4: hardening, auditability, and safer runtime initialization.
