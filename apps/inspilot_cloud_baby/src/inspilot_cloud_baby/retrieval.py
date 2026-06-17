@@ -129,13 +129,20 @@ def _extract_query_filters(*, query: str, db: Session) -> dict:
 
     # Region: match the longest known region that appears in the query
     # (direct substring). Longest-first avoids e.g. "杭州" winning over
-    # "杭州市". This handles parent→child (衢州→衢州市) at the SQL layer
-    # via prefix matching; child→parent (常山→衢州常山) is a rare edge case
-    # left to the vector fallback.
+    # "杭州市". Handles parent→child (衢州→衢州市) via SQL prefix matching.
     for region in _load_known_regions(db):
         if region and region in query:
             filters["region"] = region
             break
+
+    # Province expansion: if the query mentions a known province name (e.g.
+    # "四川省" / "浙江") but no specific city was matched above, set the
+    # region to the province so _build_region_clause expands it to its cities.
+    if "region" not in filters:
+        for prov in _PROVINCE_CITIES:
+            if prov in query:
+                filters["region"] = prov
+                break
 
     return filters
 
@@ -181,12 +188,49 @@ def _score(*, document: KnowledgeDocument, terms: list[str]) -> int:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Province → city mapping for region expansion.
+# When the user searches a province (e.g. 浙江), we expand to match any city
+# under it so that 杭州/温州/湖州 plans are included.
+_PROVINCE_CITIES: dict[str, list[str]] = {
+    "浙江": ["杭州", "湖州", "温州", "嘉兴", "宁波", "绍兴", "台州", "舟山", "丽水", "金华", "衢州", "义乌", "温岭", "三门", "新昌", "安吉", "长兴", "德清", "桐乡", "慈溪", "余姚", "临海", "瑞安", "乐清", "永康"],
+    "四川": ["成都", "绵阳", "遂宁", "眉山", "宜宾", "攀枝花", "泸州", "自贡", "德阳", "广元", "广安", "达州", "南充", "内江", "乐山", "资阳", "雅安", "巴中", "阿坝", "凉山", "西昌"],
+    "江苏": ["南京", "无锡", "苏州", "常州", "南通", "扬州", "镇江", "盐城", "徐州", "淮安", "连云港", "宿迁", "泰州", "昆山", "太仓", "常熟", "张家港", "江阴", "宜兴"],
+    "新疆": ["乌鲁木齐", "克拉玛依", "吐鲁番", "哈密", "阿克苏", "喀什", "和田", "伊犁", "昌吉", "博乐", "库尔勒", "阿勒泰", "塔城"],
+    "广东": ["广州", "深圳", "珠海", "佛山", "东莞", "中山", "惠州", "汕头", "江门", "湛江", "茂名", "肇庆", "梅州", "汕尾", "河源", "阳江", "清远", "潮州", "揭阳", "云浮"],
+    "福建": ["福州", "厦门", "泉州", "漳州", "莆田", "龙岩", "三明", "南平", "宁德", "福清", "晋江", "石狮", "南安", "长乐"],
+    "安徽": ["合肥", "芜湖", "蚌埠", "淮南", "马鞍山", "淮北", "铜陵", "安庆", "黄山", "滁州", "阜阳", "宿州", "六安", "亳州", "池州", "宣城"],
+    "山东": ["济南", "青岛", "烟台", "潍坊", "淄博", "威海", "日照", "临沂", "德州", "聊城", "滨州", "菏泽", "泰安", "济宁", "枣庄", "东营"],
+    "湖北": ["武汉", "黄石", "十堰", "宜昌", "襄阳", "鄂州", "荆门", "孝感", "荆州", "黄冈", "咸宁", "随州", "恩施", "仙桃", "天门", "潜江"],
+    "湖南": ["长沙", "株洲", "湘潭", "衡阳", "邵阳", "岳阳", "常德", "张家界", "益阳", "郴州", "永州", "怀化", "娄底", "湘西"],
+    "内蒙": ["呼和浩特", "包头", "乌海", "赤峰", "通辽", "鄂尔多斯", "呼伦贝尔", "巴彦淖尔", "乌兰察布", "兴安", "锡林郭勒", "阿拉善"],
+}
+
+
+def _expand_region(val: str) -> list[str]:
+    """Expand a province query into [province, city1, city2, ...] for matching."""
+    # Strip 省/市 suffix for lookup
+    bare = val.rstrip("省市自治区特别行政区")
+    cities = _PROVINCE_CITIES.get(bare, [])
+    return [val] + cities
+
+
+def _build_region_clause(col, val: str):
+    """Build a region WHERE clause that matches the value AND its province-expansion."""
+    from sqlalchemy import or_
+
+    expanded = _expand_region(val)
+    parts = []
+    for r in expanded:
+        parts.append(col.like(r + "%"))  # prefix: 浙江 → 浙江%, 杭州 → 杭州%
+    return or_(*parts)
+
+
 def _metadata_filter_clauses(filters: dict) -> list:
     """Build SQLAlchemy where-clauses for metadata_json filters (region/insurer/integrator).
 
-    Region uses prefix matching (衢州 matches 衢州市 / 衢州常山) to bridge
-    parent/child parsing variants. Insurer/integrator use exact match
-    (controlled vocabularies).
+    Region matching expands provinces to their cities (浙江 → 浙江/杭州/温州/...)
+    and uses prefix match per term. Insurer/integrator use exact match.
     """
     clauses = []
     for key in ("region", "insurer", "integrator"):
@@ -195,8 +239,7 @@ def _metadata_filter_clauses(filters: dict) -> list:
             continue
         col = func.cast(KnowledgeItem.metadata_json.op("->>")(key), String)
         if key == "region":
-            # Prefix match: '衢州' → '衢州%' catches 衢州市 / 衢州常山
-            clauses.append(col.like(val + "%"))
+            clauses.append(_build_region_clause(col, val))
         else:
             clauses.append(col == val)
     return clauses
