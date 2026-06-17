@@ -18,8 +18,10 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 # Alpha default user — replace with real auth when available
 _DEFAULT_USER = CurrentUser(user_id="alpha", is_company_user=True, project_ids=set())
 
-# Max chars of each retrieved plan fed to the LLM (keeps prompt bounded)
-_CONTEXT_MAX_CHARS = 1500
+# Max chars of each retrieved plan fed to the LLM. Plans are 8K-12K chars;
+# 6000 covers the key sections (话术/单证说明/费率/保额/收款/退保) while
+# keeping total prompt bounded (~48K chars for 8 plans ≈ 24K tokens).
+_CONTEXT_MAX_CHARS = 6000
 
 
 class HistoryMessage(BaseModel):
