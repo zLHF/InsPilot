@@ -14,9 +14,11 @@ The product targets **public cloud SaaS, publicly accessible**, with DingTalk as
 apps/
   inspilot_mobile_prototype/   # React mobile prototype (Vite)
   inspilot_cloud_baby/         # Alpha backend (FastAPI)
-docs/superpowers/
-  specs/                       # PRD documents (current: V2.4)
-  plans/                       # Implementation plans
+docs/
+  prod-db-dictionary.md        # Production SQL Server DB schema (436 tables)
+  superpowers/
+    specs/                     # PRD documents (current: V2.4)
+    plans/                     # Implementation plans
 ```
 
 ## Mobile Prototype (`apps/inspilot_mobile_prototype/`)
@@ -38,13 +40,13 @@ Per `AGENTS.md`: run the dev server yourself rather than giving instructions. Tr
 
 ## Alpha Backend (`apps/inspilot_cloud_baby/`)
 
-Stack: Python 3.10+, FastAPI, SQLAlchemy 2, Pydantic v2, PostgreSQL 16 + pgvector, OpenAI embeddings, pytest, Ruff, HTMX.
+Stack: Python 3.10+, FastAPI, SQLAlchemy 2, Pydantic v2, PostgreSQL 16 + pgvector, OpenAI embeddings + chat, pymssql (SQL Server), pytest, Ruff, HTMX.
 
 ```bash
 cd apps/inspilot_cloud_baby
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-python -m pytest -v            # Run all tests (42 tests)
+python -m pytest -v            # Run all tests (45 tests)
 python -m ruff check .         # Lint
 python -m uvicorn inspilot_cloud_baby.main:app --reload --host 127.0.0.1 --port 8000  # Dev server
 ```
@@ -53,7 +55,8 @@ python -m uvicorn inspilot_cloud_baby.main:app --reload --host 127.0.0.1 --port 
 
 ### Database
 
-PostgreSQL 16 runs in Docker container `inspilot-postgres` (port 5432, user/pass/db: `inspilot_cloud_baby`).
+PostgreSQL 16 runs in Docker container `inspilot-postgres` (port 5432, user/pass/db: `inspilot_cloud_baby`). Uses the `pgvector/pgvector:pg16` image (not plain postgres — the pgvector extension is required).
+**Requires Docker Desktop running** — if settings/data appear "missing", check `docker ps` first; the container may be stopped (data is safe in the volume).
 Requires **pgvector** extension (`CREATE EXTENSION IF NOT EXISTS vector` — auto-created on startup).
 Tables auto-create on startup via `main.py` `on_event("startup")` → `Base.metadata.create_all()`.
 Connection: `postgresql+psycopg://inspilot_cloud_baby:inspilot_cloud_baby@localhost:5432/inspilot_cloud_baby`
@@ -62,7 +65,7 @@ Connection: `postgresql+psycopg://inspilot_cloud_baby:inspilot_cloud_baby@localh
 
 Modular monolith. All external capabilities (DingTalk approval API, object storage, vector search) isolated behind interfaces for post-PoC replacement.
 
-Key modules: `models.py` (SQLAlchemy), `schemas.py` (Pydantic DTOs), `permissions.py` (visibility logic), `ingest/classifier.py` (material classification), `retrieval.py` (vector search + keyword fallback), `embedding.py` (OpenAI embedding service), `output_builder.py` (structured JSON), `dingtalk_admin.py` (DingTalk enterprise admin API client — direct Open Platform API, no external CLI), `routers/` (API + admin pages).
+Key modules: `models.py` (SQLAlchemy), `schemas.py` (Pydantic DTOs), `permissions.py` (visibility logic — PUBLIC_SUMMARY with no project is company-readable for shared scheme libraries), `ingest/classifier.py` (material classification), `retrieval.py` (vector search + keyword fallback + query-intent extraction + province→city expansion), `embedding.py` (OpenAI embedding service), `chat_service.py` (LLM chat service for RAG), `prod_db_service.py` (read-only SQL Server connection for NL2SQL), `output_builder.py` (structured JSON), `dingtalk_admin.py` (DingTalk enterprise admin API client — direct Open Platform API, no external CLI), `routers/` (API + admin pages: `chat.py`, `query.py` (NL2SQL), `admin.py`, `health.py`, `ingest.py`, `projects.py`).
 
 ### Vector Search (`embedding.py` + `retrieval.py`)
 
@@ -72,6 +75,46 @@ Key modules: `models.py` (SQLAlchemy), `schemas.py` (Pydantic DTOs), `permission
 - **Auto-embed**: Knowledge items get embeddings generated at creation time via `_attach_embedding()` in `routers/admin.py`
 - **Migration**: `python -m inspilot_cloud_baby.scripts.migrate_embeddings` backfills embeddings for existing items
 - **Config**: `BUSINESS_ROBOT_OPENAI_API_KEY`, `BUSINESS_ROBOT_ENABLE_VECTOR_SEARCH` (toggle), `BUSINESS_ROBOT_OPENAI_BASE_URL` (proxy support)
+
+### Conversational RAG Search (`chat.py` + `chat_service.py`)
+
+- **Search console** at `/admin/search` — full chat interface (bubbles, markdown rendering via marked.js, multi-turn history, quick-question chips)
+- **RAG flow**: user question → `retrieve_documents()` (vector + region filter) → retrieved plans fed as context to LLM (6K chars/plan) → LLM generates structured answer
+- **Chat service**: `chat_service.py` wraps OpenAI-compatible `chat.completions.create()` (OpenRouter / DeepSeek / OpenAI), 3-retry, lazy singleton with hot-reload
+- **Smart routing**: `_should_route_to_prod_db()` detects order numbers / live-data keywords → redirects to NL2SQL; otherwise doc RAG
+- **Config**: `BUSINESS_ROBOT_CHAT_API_KEY`, `BUSINESS_ROBOT_CHAT_BASE_URL`, `BUSINESS_ROBOT_CHAT_MODEL`
+- **Degraded mode**: if no chat model configured, returns title list instead of LLM answer
+
+### CS3.0 Scheme Import (`scripts/import_cs3_plans.py`)
+
+- Parses 794 self-contained HTML scheme files (strip tags → plain text + dimensions)
+- **Dimension extraction**: dual-source — title line (primary) + filename (fallback); substring-matches insurer/integrator, derives region from residual text
+- **Province→city expansion**: `_PROVINCE_CITIES` mapping in `retrieval.py` — searching a province (浙江) auto-includes its cities (杭州/温州/湖州…)
+- **Region matching**: prefix match (衢州 → 衢州市/衢州常山) at the SQL layer
+- 697 plans imported with embeddings; `source_type="cs3_plan"`, `metadata_json` holds region/insurer/integrator/doc_date
+- Idempotent (dedupes by `metadata.original_file`)
+
+### NL2SQL — Production DB Queries (`routers/query.py` + `prod_db_service.py`)
+
+- **Purpose**: query live production data (rates, orders, platform config) that's more current than the scheme documents
+- **Flow**: user question → LLM generates SQL (guided by trimmed core-table schema) → safety check → execute read-only → LLM answers from rows
+- **ProdDBService**: pymssql connection to SQL Server (YDB_GeneralSystemDB). Safety: SELECT-only regex guard, forced TOP 50, 10s timeout
+- **Data dictionary**: `docs/prod-db-dictionary.md` (436 tables, 5567 fields) — regenerate when prod schema changes
+- **Config**: `BUSINESS_ROBOT_PROD_DB_HOST/PORT/NAME/USER/PASSWORD` (use a read-only account)
+- **Test endpoint**: `POST /admin/settings/db-test` (pre-save connection test)
+
+### Plan Detail Page (`/admin/knowledge/{id}`)
+
+- Structured rendering of scheme body via `format_plan_body()` — known section titles → sub-headings, `《...》` doc names → h4, key:value lines → definition rows
+- Metadata header (region/insurer/integrator/date badges), source filename, copy-all button
+
+### Settings Page (`/admin/settings`)
+
+Three configurable services, each with a **pre-save test button** (tests current input-box values before committing):
+- **🔑 OpenAI Embedding** — API key / base URL / model + vector search toggle
+- **🤖 对话模型** — API key / base URL / model (for RAG chat)
+- **🗄️ 生产数据库** — SQL Server host/port/db/user/password (for NL2SQL)
+- All saved to `app_settings` table; hot-reload via singleton reset; env vars override DB
 
 ### DingTalk Admin API (`dingtalk_admin.py`)
 
@@ -94,9 +137,12 @@ Direct client for the DingTalk Open Platform (`/topapi/processinstance/*`), usin
 HTMX-driven admin UI at `/admin/*`:
 - **Dashboard** (`/admin`) — project/knowledge stats
 - **Ingest** (`/admin/ingest`) — text-based knowledge import with auto-classification
-- **Knowledge** (`/admin/knowledge`) — CRUD + status workflow (待审核 → 已生效 → 已归档)
+- **Knowledge** (`/admin/knowledge`) — CRUD + status workflow (待审核 → 已生效 → 已归档), pagination (20/page default, 50/100 options, pager top+bottom)
+- **Plan Detail** (`/admin/knowledge/{id}`) — structured read-only view of a scheme
+- **Search Console** (`/admin/search`) — conversational RAG chat interface
 - **Projects** (`/admin/projects`) — project management with visibility settings
 - **DingTalk Approval Import** (`/admin/dws`) — single + batch DingTalk approval import (direct Open Platform API) with progress indicator
+- **Settings** (`/admin/settings`) — embedding + chat model + prod DB config with pre-save test buttons
 - Templates in `templates/` with HTMX partials in `templates/partials/`
 
 ## Key Domain Concepts
