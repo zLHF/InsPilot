@@ -20,6 +20,11 @@ _DEFAULT_USER = CurrentUser(user_id="alpha", is_company_user=True, project_ids=s
 
 class ChatQueryRequest(BaseModel):
     query: str
+    # Optional manual filters (empty string = not set). Auto-extracted intent
+    # from the query text is merged on top, but manual values take precedence.
+    region: str = ""
+    insurer: str = ""
+    integrator: str = ""
 
 
 class SourceItem(BaseModel):
@@ -61,6 +66,16 @@ def _preview(body: str, query: str, width: int = 240) -> str:
 
 @router.post("/query", response_model=ChatQueryResponse)
 def query_chat(request: ChatQueryRequest) -> ChatQueryResponse:
+    # Build manual filters from request (only non-empty values)
+    manual_filters: dict | None = None
+    manual = {
+        "region": request.region.strip(),
+        "insurer": request.insurer.strip(),
+        "integrator": request.integrator.strip(),
+    }
+    if any(manual.values()):
+        manual_filters = {k: v for k, v in manual.items() if v}
+
     db: Session = SessionLocal()
     try:
         results = retrieve_documents(
@@ -69,6 +84,7 @@ def query_chat(request: ChatQueryRequest) -> ChatQueryResponse:
             documents=[],  # vector search queries DB directly
             limit=8,
             db=db,
+            filters=manual_filters,
         )
     finally:
         db.close()

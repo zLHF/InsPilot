@@ -45,11 +45,25 @@
     cursor: pointer;
   }
   .suggestions button:hover { border-color: #3b82f6; color: #3b82f6; }
+  .filter-row { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
+  .filter-row select {
+    padding:6px 10px; font-size:13px; border:1px solid #cbd5e1;
+    border-radius:6px; background:#fff; color:#334155; outline:none; min-width:120px;
+  }
+  .filter-row select:focus { border-color:#3b82f6; }
+  .filter-hint { font-size:12px; color:#94a3b8; }
 </style>
 
 <div class="search-box">
   <input type="text" id="q" placeholder="试试：福建人保退保流程 / 见费出单 / 独立出单模式 / 绵阳国寿财…" autofocus>
   <button class="btn btn-primary" id="go" onclick="doSearch()">🔍 检索</button>
+</div>
+
+<div class="filter-row" id="filters">
+  <select id="f-region"><option value="">全部地区</option></select>
+  <select id="f-insurer"><option value="">全部保司</option></select>
+  <select id="f-integrator"><option value="">全部集成商</option></select>
+  <span class="filter-hint">💡 不选则自动从问题里识别地区/保司</span>
 </div>
 
 <div class="suggestions" id="sugs">
@@ -92,10 +106,17 @@ async function doSearch(){
   sugs.style.display = 'none';
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
   out.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:10px">正在检索…</p></div>';
+  const payload = {query: q};
+  const region = document.getElementById('f-region').value;
+  const insurer = document.getElementById('f-insurer').value;
+  const integrator = document.getElementById('f-integrator').value;
+  if(region) payload.region = region;
+  if(insurer) payload.insurer = insurer;
+  if(integrator) payload.integrator = integrator;
   try{
     const res = await fetch('/chat/query', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({query: q})
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
     render(data, q);
@@ -136,5 +157,23 @@ function render(data, q){
   });
   out.innerHTML = html;
 }
+
+// Load filter dropdown options on page load
+(async function loadFacets(){
+  try{
+    const res = await fetch('/admin/search/facets');
+    const f = await res.json();
+    const fill = (id, vals) => {
+      const sel = document.getElementById(id);
+      vals.forEach(v => {
+        const o = document.createElement('option'); o.value = v; o.textContent = v;
+        sel.appendChild(o);
+      });
+    };
+    fill('f-region', f.regions || []);
+    fill('f-insurer', f.insurers || []);
+    fill('f-integrator', f.integrators || []);
+  }catch(e){ console.warn('facets load failed', e); }
+})();
 </script>
 {% endblock %}

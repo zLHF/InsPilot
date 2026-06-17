@@ -240,6 +240,40 @@ def search_page(request: Request):
     return templates.TemplateResponse(request, "search.html", _ctx(request))
 
 
+@router.get("/search/facets")
+def search_facets():
+    """Return distinct region/insurer/integrator values for filter dropdowns."""
+    from fastapi.responses import JSONResponse
+
+    # Noise region values from functional pages (not real regions)
+    _region_noise = {
+        "ca授权签章", "ca登录", "ok", "‼️发票申请", "CS3.0", "三方平台方案模板",
+        "签章", "发票", "流程图", "付款通知书", "退保", "出单", "打款", "中心",
+    }
+
+    def _clean(values):
+        return sorted(v for v in values if v and v not in _region_noise and len(v) >= 2)
+
+    def _query():
+        with SessionLocal() as session:
+            regions = _clean(session.execute(
+                select(func.distinct(KnowledgeItem.metadata_json["region"]))
+                .where(KnowledgeItem.source_type == "cs3_plan")
+            ).scalars().all())
+            insurers = _clean(session.execute(
+                select(func.distinct(KnowledgeItem.metadata_json["insurer"]))
+                .where(KnowledgeItem.source_type == "cs3_plan")
+            ).scalars().all())
+            integrators = _clean(session.execute(
+                select(func.distinct(KnowledgeItem.metadata_json["integrator"]))
+                .where(KnowledgeItem.source_type == "cs3_plan")
+            ).scalars().all())
+            return {"regions": regions, "insurers": insurers, "integrators": integrators}
+
+    facets = _db_query(_query) or {"regions": [], "insurers": [], "integrators": []}
+    return JSONResponse(facets)
+
+
 # ---------------------------------------------------------------------------
 # Plan detail — structured rendering of a scheme's body
 # ---------------------------------------------------------------------------
