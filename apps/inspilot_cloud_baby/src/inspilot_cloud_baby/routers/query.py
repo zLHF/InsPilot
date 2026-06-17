@@ -89,13 +89,17 @@ _SCHEMA_SUMMARY = """\
 ## 重要说明
 - **集成商/单证格式**：生产库中没有"集成商"字段（如'新点'/'筑龙'），这类信息在方案知识库里，不要尝试从生产库查集成商。
 - **生产库能查的**：上线网点（T_PRC_Info.Prc_Name）、订单数据（费率/保费/状态）、机构关联的平台。
-- **查某机构的上线网点**：先从 T_PProduct_InsuranceInfo 按全称/简称找到机构，再 JOIN T_Guarantee_Info（cInsuranceCompany=机构简称）→ JOIN T_PRC_Info（platformcode=Prc_Code），SELECT 机构简称 + 平台名称。
+- **机构名匹配**：机构在订单表 T_Guarantee_Info.cInsuranceCompany 里存的是**简称**（如'湘投非融'而非'青海湘投非融资性担保有限公司'）。
+  用户给的往往是全称，不能直接精确匹配。应该取全称中的**关键词**（去掉'有限公司/融资/担保/非融资性'等通用词后剩下的部分）做 LIKE 模糊匹配。
+  例如：'青海湘投非融资性担保有限公司' → 用 '湘投' 在 cInsuranceCompany 里 LIKE 匹配。
+- **两层查找机构**：先在 T_PProduct_InsuranceInfo 按全称 LIKE 查（可能查不到），同时直接在 T_Guarantee_Info.cInsuranceCompany 按关键词 LIKE 查（更可靠）。两个都要试。
 
 ## 查询提示
-- 用户给出的"XXX融资担保有限公司"等全称，用 T_PProduct_InsuranceInfo.cInsuranceFullName LIKE '%关键词%' 模糊匹配。
-- 多个机构批量查询：把每个机构名拆成关键词，用多个 LIKE OR 连接。
-- **结果必须包含机构名称列**（ins.cInsuranceName 或 ins.cInsuranceFullName），否则无法区分哪行属于哪家机构。
+- 用户给出的"XXX融资担保有限公司"等全称，提取关键词（2-4字的 distinctive 部分，如'湘投''天安''联银'），用 LIKE '%关键词%' 在 cInsuranceCompany 里匹配。
+- 多个机构批量查询：每个机构提取一个关键词，用多个 LIKE OR 连接。
+- **结果必须包含机构名称列**（cInsuranceCompany 或 cInsuranceName），否则无法区分哪行属于哪家机构。
 - 费率在 T_Guarantee_Info.fRate，保费在 T_Guarantee_Info.fPremium。
+- 查上线网点：T_Guarantee_Info JOIN T_PRC_Info ON platformcode = Prc_Code，SELECT DISTINCT 机构简称 + 平台名称。
 """
 
 _SQL_SYSTEM_PROMPT = (
