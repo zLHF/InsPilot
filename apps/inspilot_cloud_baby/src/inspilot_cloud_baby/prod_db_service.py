@@ -19,7 +19,7 @@ _FORBIDDEN_RE = re.compile(
     r"merge|grant|revoke|backup|restore|sp_|xp_|shutdown)\b",
     re.IGNORECASE,
 )
-_MAX_ROWS = 50
+_MAX_ROWS = 100
 
 
 def _load_db_settings() -> dict[str, str]:

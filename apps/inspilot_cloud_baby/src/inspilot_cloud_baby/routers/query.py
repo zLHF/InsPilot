@@ -31,8 +31,8 @@ _SCHEMA_SUMMARY = """\
 - fMarginAmount (decimal, 保证金金额)
 - cPolicyNo (nvarchar, 保单号)
 - fState (tinyint, 状态: 0未签章 2已签章 3付款未到账 4已付款 5付款异常 6已出函 10已出具发票)
-- cInsuranceCompany (nvarchar, 保险公司名称)
-- cInsuranceCode (varchar, 保险公司编码)
+- cInsuranceCompany (nvarchar, 保司/担保机构名称，如'联银担保'、'天安担保')
+- cInsuranceCode (varchar, 保司/担保机构编码)
 - cOrderId (varchar, 订单号)
 - platformcode (varchar, 平台编码)
 - CreateTime (datetime, 创建时间)
@@ -72,22 +72,31 @@ _SCHEMA_SUMMARY = """\
 - fClientMode (tinyint, 客户端模式)
 - cRemarks (nvarchar, 备注)
 
-### T_PProduct_InsuranceInfo — 保险公司表
+### T_PProduct_InsuranceInfo — 保险公司/担保机构表
 - ID (int, 主键)
-- cInsuranceName (nvarchar, 机构简称)
-- cInsuranceFullName (nvarchar, 机构全称)
+- cInsuranceName (nvarchar, 机构简称，如'联银担保'、'天安担保')
+- cInsuranceFullName (nvarchar, 机构全称，如'浙江联银融资担保有限公司')
 
 ## 关键表关系
 - T_Guarantee_Info.fProjectID → T_Guarantee_Project.ID
 - T_Guarantee_BidInfo.fGuaranteeID → T_Guarantee_Info.ID
 - T_Guarantee_Info.platformcode → T_PRC_Info.Prc_Code
+- T_Guarantee_Info.cInsuranceCompany → T_PProduct_InsuranceInfo.cInsuranceName (机构简称)
+- T_PProduct_InsuranceInfo.cInsuranceFullName 存全称，用户可能用全称或简称查询
+
+## 查询提示
+- 用户给出的"XXX融资担保有限公司"等全称，可用 T_PProduct_InsuranceInfo.cInsuranceFullName 模糊匹配，
+  再 JOIN T_Guarantee_Info.cInsuranceCompany 查订单数据。
+- 多个机构批量查询时，用 IN 或 OR LIKE 一次查出。
+- 费率在 T_Guarantee_Info.fRate，保费在 T_Guarantee_Info.fPremium。
+- 平台/网点在 T_PRC_Info，通过 platformcode 关联。
 """
 
 _SQL_SYSTEM_PROMPT = (
     "你是一个 SQL 生成助手。根据用户的问题和下面的数据库表结构，生成一条 SQL Server (T-SQL) 查询语句。\n"
     "规则：\n"
     "1. 只能生成 SELECT 语句，禁止 INSERT/UPDATE/DELETE/DROP 等。\n"
-    "2. 查询结果不要超过 50 行（用 TOP 50）。\n"
+    "2. 查询结果不要超过 100 行（用 TOP 100）。\n"
     "3. 只返回 SQL 语句本身，不要加任何解释或 markdown 代码块标记。\n"
     "4. 用中文列名做别名（AS）方便阅读。\n"
     "5. 如果问题是关于某个订单号的，用 cOrderId 或 cPolicyNo 字段查询。\n"

@@ -22,11 +22,15 @@ _DEFAULT_USER = CurrentUser(user_id="alpha", is_company_user=True, project_ids=s
 # Keywords that suggest the user wants live production-data (NL2SQL) not doc RAG
 _PROD_DB_KEYWORDS = re.compile(
     r"订单号|保单号|出函|实时|当前状态|查一下|查询订单|订单状态|"
-    r"最近.*订单|今天.*出单|出单.*多少|保费.*多少|费率.*多少",
+    r"最近.*订单|今天.*出单|出单.*多少|保费.*多少|费率.*多少|"
+    r"查询.*机构|机构.*对应|网点|集成商|担保.*有限公司|"
+    r"上线|统计|汇总|总数|占比|分布|对比|排名|排行",
     re.IGNORECASE,
 )
 # Pattern that looks like an order/policy number (alphanumeric, length >= 10)
 _ORDER_ID_RE = re.compile(r"\b[A-Za-z0-9]{10,}\b")
+# Multiple company/institution names in one query → batch lookup → prod DB
+_MULTI_COMPANY_RE = re.compile(r"(有限公司|担保|保险|经纪).*(有限公司|担保|保险|经纪)")
 
 # Max chars of each retrieved plan fed to the LLM. Plans are 8K-12K chars;
 # 6000 covers the key sections (话术/单证说明/费率/保额/收款/退保) while
@@ -95,6 +99,9 @@ def _should_route_to_prod_db(query: str) -> bool:
     """Decide whether a query should go to the production DB (NL2SQL) vs RAG."""
     # Strong signal: an order/policy number in the query
     if _ORDER_ID_RE.search(query) and any(kw in query for kw in ("订单", "保单", "查", "状态")):
+        return True
+    # Multiple company names → batch lookup → prod DB
+    if _MULTI_COMPANY_RE.search(query):
         return True
     # Keyword-based signals
     if _PROD_DB_KEYWORDS.search(query):
