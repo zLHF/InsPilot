@@ -886,6 +886,11 @@ _SETTINGS_KEYS = [
     "chat_api_key",
     "chat_base_url",
     "chat_model",
+    "prod_db_host",
+    "prod_db_port",
+    "prod_db_name",
+    "prod_db_user",
+    "prod_db_password",
 ]
 
 
@@ -962,6 +967,11 @@ def settings_page(request: Request, saved: str = ""):
             chat_key_hint=chat_key_hint,
             chat_base_url=db_settings.get("chat_base_url", ""),
             chat_model=db_settings.get("chat_model", ""),
+            prod_db_host=db_settings.get("prod_db_host", ""),
+            prod_db_port=db_settings.get("prod_db_port", "1433"),
+            prod_db_name=db_settings.get("prod_db_name", ""),
+            prod_db_user=db_settings.get("prod_db_user", ""),
+            prod_db_available=bool(db_settings.get("prod_db_host")),
         ),
     )
 
@@ -976,6 +986,11 @@ def settings_save(
     chat_api_key: str = Form(""),
     chat_base_url: str = Form(""),
     chat_model: str = Form(""),
+    prod_db_host: str = Form(""),
+    prod_db_port: str = Form(""),
+    prod_db_name: str = Form(""),
+    prod_db_user: str = Form(""),
+    prod_db_password: str = Form(""),
 ):
     """Save settings to DB and reload embedding + chat services.
 
@@ -1004,6 +1019,17 @@ def settings_save(
                 _save_setting(session, "chat_base_url", chat_base_url.strip())
             if chat_model.strip():
                 _save_setting(session, "chat_model", chat_model.strip())
+            # Production DB settings
+            if prod_db_host.strip():
+                _save_setting(session, "prod_db_host", prod_db_host.strip())
+            if prod_db_port.strip():
+                _save_setting(session, "prod_db_port", prod_db_port.strip())
+            if prod_db_name.strip():
+                _save_setting(session, "prod_db_name", prod_db_name.strip())
+            if prod_db_user.strip():
+                _save_setting(session, "prod_db_user", prod_db_user.strip())
+            if prod_db_password.strip():
+                _save_setting(session, "prod_db_password", prod_db_password.strip())
             session.commit()
 
     try:
@@ -1019,8 +1045,10 @@ def settings_save(
     # Hot-reload: reset singletons so next call picks up new config
     import inspilot_cloud_baby.chat_service as chat_mod
     import inspilot_cloud_baby.embedding as emb_mod
+    import inspilot_cloud_baby.prod_db_service as db_mod
     chat_mod._service = None
     emb_mod._service = None
+    db_mod._service = None
 
     # Redirect to GET to show the saved state (PRG pattern)
     from fastapi.responses import RedirectResponse
@@ -1070,6 +1098,11 @@ def _settings_ctx(request: Request, error: str = "") -> dict:
         chat_key_hint=chat_key_hint,
         chat_base_url=db_settings.get("chat_base_url", ""),
         chat_model=db_settings.get("chat_model", ""),
+        prod_db_host=db_settings.get("prod_db_host", ""),
+        prod_db_port=db_settings.get("prod_db_port", "1433"),
+        prod_db_name=db_settings.get("prod_db_name", ""),
+        prod_db_user=db_settings.get("prod_db_user", ""),
+        prod_db_available=bool(db_settings.get("prod_db_host")),
     )
 
 
@@ -1184,6 +1217,39 @@ def settings_chat_test(request: Request):
             test_endpoint=endpoint,
             test_model=model,
         ),
+    )
+
+
+@router.post("/settings/db-test")
+def settings_db_test(request: Request):
+    """Test the production DB connection with CURRENT FORM values (pre-save)."""
+    from inspilot_cloud_baby.prod_db_service import ProdDBService
+
+    import json
+
+    try:
+        body = json.loads(request.headers.get("x-test-body", "{}"))
+    except Exception:
+        body = {}
+    host = body.get("host", "").strip()
+    port = body.get("port", "").strip() or "1433"
+    database = body.get("database", "").strip()
+    user = body.get("user", "").strip()
+    password = body.get("password", "").strip()
+
+    if not host:
+        return templates.TemplateResponse(
+            request,
+            "partials/_settings_test.html",
+            _ctx(request, test_ok=False, test_message="未配置数据库地址。"),
+        )
+
+    svc = ProdDBService(host=host, port=int(port), database=database, user=user, password=password)
+    ok, msg = svc.test_connection()
+    return templates.TemplateResponse(
+        request,
+        "partials/_settings_test.html",
+        _ctx(request, test_ok=ok, test_message=msg),
     )
 
 

@@ -27,5 +27,12 @@ class Settings(BaseSettings):
     chat_base_url: str = ""      # BUSINESS_ROBOT_CHAT_BASE_URL，如 https://openrouter.ai/api/v1
     chat_model: str = ""         # BUSINESS_ROBOT_CHAT_MODEL，如 openai/gpt-4o-mini
 
+    # 生产数据库配置（SQL Server，只读连接）
+    prod_db_host: str = ""       # BUSINESS_ROBOT_PROD_DB_HOST
+    prod_db_port: int = 1433     # BUSINESS_ROBOT_PROD_DB_PORT
+    prod_db_name: str = ""       # BUSINESS_ROBOT_PROD_DB_NAME
+    prod_db_user: str = ""       # BUSINESS_ROBOT_PROD_DB_USER
+    prod_db_password: str = ""   # BUSINESS_ROBOT_PROD_DB_PASSWORD
+
 
 settings = Settings()

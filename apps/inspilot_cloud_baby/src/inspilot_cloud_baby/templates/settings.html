@@ -172,6 +172,51 @@
     <div id="test-chat" class="test-result"></div>
   </div>
 
+  <div class="card" style="margin-top:16px;">
+    <div class="card-header">
+      <span>🗄️ 生产数据库配置 <small style="font-weight:normal;color:#94a3b8;">（SQL Server，只读）</small></span>
+    </div>
+    <div class="text-sm text-muted mb-2">
+      连接生产库用于实时查询（费率、订单、平台配置等）。建议使用<strong>只读账号</strong>。
+      {% if prod_db_available %}<span class="badge badge-green">✓ 已配置</span>{% else %}<span class="badge badge-gray">未配置</span>{% endif %}
+    </div>
+
+    <div class="form-row">
+      <div class="form-group" style="flex:2;">
+        <label for="prod_db_host">服务器地址</label>
+        <input type="text" id="prod_db_host" name="prod_db_host"
+               value="{{ prod_db_host }}" placeholder="如 47.97.211.193">
+      </div>
+      <div class="form-group" style="flex:1;">
+        <label for="prod_db_port">端口</label>
+        <input type="text" id="prod_db_port" name="prod_db_port"
+               value="{{ prod_db_port }}" placeholder="1433">
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="prod_db_name">数据库名</label>
+      <input type="text" id="prod_db_name" name="prod_db_name"
+             value="{{ prod_db_name }}" placeholder="如 YDB_GeneralSystemDB">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="prod_db_user">用户名</label>
+        <input type="text" id="prod_db_user" name="prod_db_user"
+               value="{{ prod_db_user }}" placeholder="只读账号">
+      </div>
+      <div class="form-group">
+        <label for="prod_db_password">密码</label>
+        <input type="password" id="prod_db_password" name="prod_db_password"
+               placeholder="留空 = 保持当前值" autocomplete="off">
+      </div>
+    </div>
+
+    <button type="button" class="btn btn-outline btn-sm" onclick="testDB()">
+      🧪 测试此连接
+    </button>
+    <div id="test-db" class="test-result"></div>
+  </div>
+
   <div style="margin-top:16px; display:flex; gap:12px; align-items:center;">
     <button type="submit" class="btn btn-primary">💾 保存设置</button>
     <a href="/admin/settings" class="btn btn-outline">取消</a>
@@ -199,6 +244,28 @@ async function testModel(which){
     const res = await fetch(endpoint, {
       method:'POST',
       headers:{'Content-Type':'application/json', 'X-Test-Body': JSON.stringify({api_key:apiKey, base_url:baseUrl, model:model})},
+      body:'{}'
+    });
+    area.innerHTML = await res.text();
+  }catch(e){
+    area.innerHTML = '<div style="color:#dc2626;font-size:13px;">❌ 请求失败：'+e.message+'</div>';
+  }
+}
+
+async function testDB(){
+  const host = document.getElementById('prod_db_host').value.trim();
+  const port = document.getElementById('prod_db_port').value.trim();
+  const database = document.getElementById('prod_db_name').value.trim();
+  const user = document.getElementById('prod_db_user').value.trim();
+  const password = document.getElementById('prod_db_password').value.trim();
+  const area = document.getElementById('test-db');
+  if(!host){ area.innerHTML = '<div style="color:#dc2626;font-size:13px;">请先填写服务器地址</div>'; return; }
+
+  area.innerHTML = '<span class="text-sm text-muted">⏳ 测试中…</span>';
+  try{
+    const res = await fetch('/admin/settings/db-test', {
+      method:'POST',
+      headers:{'Content-Type':'application/json', 'X-Test-Body': JSON.stringify({host,port,database,user,password})},
       body:'{}'
     });
     area.innerHTML = await res.text();

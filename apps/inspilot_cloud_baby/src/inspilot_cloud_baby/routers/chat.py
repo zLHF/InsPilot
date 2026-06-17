@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -17,6 +18,15 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 # Alpha default user — replace with real auth when available
 _DEFAULT_USER = CurrentUser(user_id="alpha", is_company_user=True, project_ids=set())
+
+# Keywords that suggest the user wants live production-data (NL2SQL) not doc RAG
+_PROD_DB_KEYWORDS = re.compile(
+    r"订单号|保单号|出函|实时|当前状态|查一下|查询订单|订单状态|"
+    r"最近.*订单|今天.*出单|出单.*多少|保费.*多少|费率.*多少",
+    re.IGNORECASE,
+)
+# Pattern that looks like an order/policy number (alphanumeric, length >= 10)
+_ORDER_ID_RE = re.compile(r"\b[A-Za-z0-9]{10,}\b")
 
 # Max chars of each retrieved plan fed to the LLM. Plans are 8K-12K chars;
 # 6000 covers the key sections (话术/单证说明/费率/保额/收款/退保) while
@@ -81,8 +91,26 @@ def _build_context(results) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+def _should_route_to_prod_db(query: str) -> bool:
+    """Decide whether a query should go to the production DB (NL2SQL) vs RAG."""
+    # Strong signal: an order/policy number in the query
+    if _ORDER_ID_RE.search(query) and any(kw in query for kw in ("订单", "保单", "查", "状态")):
+        return True
+    # Keyword-based signals
+    if _PROD_DB_KEYWORDS.search(query):
+        return True
+    return False
+
+
 @router.post("/query", response_model=ChatQueryResponse)
 def query_chat(request: ChatQueryRequest) -> ChatQueryResponse:
+    # Smart routing: production-data questions → NL2SQL, else → doc RAG
+    if _should_route_to_prod_db(request.query):
+        from inspilot_cloud_baby.prod_db_service import get_prod_db_service
+        db_svc = get_prod_db_service()
+        if db_svc.available:
+            return _answer_via_prod_db(request)
+
     # Build manual filters from request (only non-empty values)
     manual_filters: dict | None = None
     manual = {
@@ -153,4 +181,20 @@ def query_chat(request: ChatQueryRequest) -> ChatQueryResponse:
         sources=sources,
         count=len(results),
         llm_used=False,
+    )
+
+
+def _answer_via_prod_db(request: ChatQueryRequest) -> ChatQueryResponse:
+    """Route a production-data question through NL2SQL and return a chat response."""
+    from inspilot_cloud_baby.routers.query import query_sql, QueryRequest
+
+    result = query_sql(QueryRequest(query=request.query, history=[h.model_dump() for h in request.history]))
+    sql_block = ""
+    if result.sql:
+        sql_block = f"\n\n<details><summary>📄 生成的 SQL（{result.row_count} 行）</summary>\n\n```sql\n{result.sql}\n```\n\n</details>"
+    return ChatQueryResponse(
+        answer=result.answer + sql_block,
+        sources=[],
+        count=result.row_count,
+        llm_used=result.success,
     )
