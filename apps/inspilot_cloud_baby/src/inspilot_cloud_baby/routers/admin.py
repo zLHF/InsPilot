@@ -1075,27 +1075,31 @@ def _settings_ctx(request: Request, error: str = "") -> dict:
 
 @router.post("/settings/test")
 def settings_test(request: Request):
-    """Test the embedding API connection using the CURRENTLY SAVED config.
+    """Test the embedding API with the CURRENT FORM values (pre-save).
 
-    Builds a fresh EmbeddingService from effective config (env > DB) so it
-    reflects whatever was just saved, then issues one real embedding request.
-    Returns an HTMX partial showing success/failure.
+    Accepts JSON {api_key, base_url, model}. Empty fields fall back to the
+    currently saved config so the user can test without re-entering the key.
     """
     from inspilot_cloud_baby.embedding import EmbeddingService, get_effective_config
 
-    cfg = get_effective_config()
-    api_key = cfg["api_key"]
-    base_url = cfg["base_url"]
-    model = cfg["model"]
+    import json
+
+    try:
+        body = json.loads(request.headers.get("x-test-body", "{}"))
+    except Exception:
+        body = {}
+    saved = get_effective_config()
+    api_key = body.get("api_key", "").strip() or saved["api_key"]
+    base_url = body.get("base_url", "").strip() or saved["base_url"]
+    model = body.get("model", "").strip() or saved["model"]
 
     if not api_key:
         return templates.TemplateResponse(
             request,
             "partials/_settings_test.html",
-            _ctx(request, test_ok=False, test_message="未配置 API Key，无法测试。请先填写并保存 API Key。"),
+            _ctx(request, test_ok=False, test_message="未配置 API Key，无法测试。请先填写 API Key。"),
         )
 
-    # Build a fresh service (don't reuse the singleton) to test the live config
     svc = EmbeddingService(api_key=api_key, base_url=base_url, model=model, enable_vector_search=True)
     vector = svc.embed_text("测试连接")
 
@@ -1108,12 +1112,11 @@ def settings_test(request: Request):
             _ctx(
                 request,
                 test_ok=True,
-                test_message=f"连接成功。模型 {model} 返回 {dim} 维向量。",
+                test_message=f"✅ 连接成功。模型 {model} 返回 {dim} 维向量。",
                 test_endpoint=endpoint,
             ),
         )
 
-    # Failed — show the endpoint + model attempted
     endpoint = base_url or "https://api.openai.com/v1 (官方)"
     return templates.TemplateResponse(
         request,
@@ -1121,10 +1124,7 @@ def settings_test(request: Request):
         _ctx(
             request,
             test_ok=False,
-            test_message=(
-                "连接失败（3 次重试均失败）。请检查：API Key 是否正确、Base URL 是否可达、"
-                "模型名是否被该服务商支持。详细错误见服务端日志。"
-            ),
+            test_message="❌ 连接失败。请检查 API Key、Base URL、模型名是否正确。",
             test_endpoint=endpoint,
             test_model=model,
         ),
@@ -1133,29 +1133,35 @@ def settings_test(request: Request):
 
 @router.post("/settings/chat-test")
 def settings_chat_test(request: Request):
-    """Test the chat model connection using the CURRENTLY SAVED config."""
+    """Test the chat model with the CURRENT FORM values (pre-save)."""
     from inspilot_cloud_baby.chat_service import ChatService, get_chat_config
 
-    cfg = get_chat_config()
-    api_key = cfg["api_key"]
-    base_url = cfg["base_url"]
-    model = cfg["model"]
+    import json
+
+    try:
+        body = json.loads(request.headers.get("x-test-body", "{}"))
+    except Exception:
+        body = {}
+    saved = get_chat_config()
+    api_key = body.get("api_key", "").strip() or saved["api_key"]
+    base_url = body.get("base_url", "").strip() or saved["base_url"]
+    model = body.get("model", "").strip() or saved["model"]
 
     if not api_key:
         return templates.TemplateResponse(
             request,
             "partials/_settings_test.html",
-            _ctx(request, test_ok=False, test_message="未配置对话模型 API Key。请先填写并保存。"),
+            _ctx(request, test_ok=False, test_message="未配置对话模型 API Key。请先填写。"),
         )
     if not model:
         return templates.TemplateResponse(
             request,
             "partials/_settings_test.html",
-            _ctx(request, test_ok=False, test_message="未配置对话模型名称（如 openai/gpt-4o-mini）。请先填写并保存。"),
+            _ctx(request, test_ok=False, test_message="未配置对话模型名称。请先填写。"),
         )
 
     svc = ChatService(api_key=api_key, base_url=base_url, model=model)
-    reply = svc.chat([{"role": "user", "content": "你好，请回复「对话模型连接正常」。"}])
+    reply = svc.chat([{"role": "user", "content": "你好，请回复「连接正常」。"}])
 
     endpoint = base_url or "https://api.openai.com/v1 (官方)"
     if reply:
@@ -1165,7 +1171,7 @@ def settings_chat_test(request: Request):
             "partials/_settings_test.html",
             _ctx(
                 request, test_ok=True,
-                test_message=f"连接成功。模型 {model} 回复：{snippet}",
+                test_message=f"✅ 连接成功。模型 {model} 回复：{snippet}",
                 test_endpoint=endpoint,
             ),
         )
@@ -1174,7 +1180,7 @@ def settings_chat_test(request: Request):
         "partials/_settings_test.html",
         _ctx(
             request, test_ok=False,
-            test_message="连接失败（3 次重试均失败）。请检查 API Key、Base URL、模型名是否正确。",
+            test_message="❌ 连接失败。请检查 API Key、Base URL、模型名是否正确。",
             test_endpoint=endpoint,
             test_model=model,
         ),

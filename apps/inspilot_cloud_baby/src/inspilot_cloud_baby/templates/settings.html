@@ -122,6 +122,13 @@
       </label>
       <div class="text-sm text-muted mt-2">关闭后检索将使用关键词匹配（降级模式）。</div>
     </div>
+
+    <div style="display:flex;gap:8px;align-items:center;margin-top:10px;">
+      <button type="button" class="btn btn-outline btn-sm" onclick="testModel('embedding')">
+        🧪 测试此配置
+      </button>
+    </div>
+    <div id="test-embedding" class="test-result"></div>
   </div>
 
   <div class="card" style="margin-top:16px;">
@@ -157,39 +164,48 @@
       </div>
     </div>
 
-    <button type="button" class="btn btn-outline btn-sm" id="chat-test-btn"
-            hx-post="/admin/settings/chat-test"
-            hx-target="#chat-test-area"
-            hx-swap="innerHTML"
-            hx-indicator="#chat-test-spinner">
-      <span class="htmx-hide-on-request">🧪 测试对话模型</span>
-      <span id="chat-test-spinner" class="htmx-indicator">⏳ 测试中…</span>
-    </button>
-    <div id="chat-test-area" style="margin-top:10px;"></div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:10px;">
+      <button type="button" class="btn btn-outline btn-sm" onclick="testModel('chat')">
+        🧪 测试此配置
+      </button>
+    </div>
+    <div id="test-chat" class="test-result"></div>
   </div>
 
-  <div style="margin-top:16px; display:flex; gap:12px;">
+  <div style="margin-top:16px; display:flex; gap:12px; align-items:center;">
     <button type="submit" class="btn btn-primary">💾 保存设置</button>
     <a href="/admin/settings" class="btn btn-outline">取消</a>
+    <span class="text-sm text-muted">💡 建议先点「测试此配置」验证通过后再保存。</span>
   </div>
 </form>
 
-<!-- 连接测试（用当前已保存的配置，需先点上方「保存」再测试） -->
-<div class="card" style="margin-top:16px;">
-  <div class="card-header"><span>🔌 连接测试</span></div>
-  <p class="text-sm text-muted mb-2">
-    用<strong>当前已保存</strong>的配置发起一次真实 embedding 请求，验证 API Key / Base URL / 模型是否可用。
-    修改配置后请先点上方「保存设置」，再点此按钮。
-  </p>
-  <button type="button" class="btn btn-outline" id="test-btn"
-          hx-post="/admin/settings/test"
-          hx-target="#settings-test-area"
-          hx-swap="innerHTML"
-          hx-indicator="#test-spinner">
-    <span class="htmx-hide-on-request">🧪 测试连接</span>
-    <span id="test-spinner" class="htmx-indicator">⏳ 测试中…</span>
-  </button>
-  <div id="settings-test-area" style="margin-top:12px;"></div>
-</div>
+<style>
+  .test-result:empty { display:none; }
+  .test-result { margin-top:10px; }
+</style>
+<script>
+async function testModel(which){
+  // Read CURRENT input-box values (pre-save) for the requested model section
+  const prefix = which === 'chat' ? 'chat_' : 'openai_';
+  const modelKey = which === 'chat' ? 'chat_model' : 'openai_embedding_model';
+  const apiKey = document.getElementById(prefix + 'api_key').value.trim();
+  const baseUrl = document.getElementById(prefix + 'base_url').value.trim();
+  const model = document.getElementById(modelKey).value.trim();
+  const area = document.getElementById('test-' + which);
+  const endpoint = which === 'chat' ? '/admin/settings/chat-test' : '/admin/settings/test';
+
+  area.innerHTML = '<span class="text-sm text-muted">⏳ 测试中…</span>';
+  try{
+    const res = await fetch(endpoint, {
+      method:'POST',
+      headers:{'Content-Type':'application/json', 'X-Test-Body': JSON.stringify({api_key:apiKey, base_url:baseUrl, model:model})},
+      body:'{}'
+    });
+    area.innerHTML = await res.text();
+  }catch(e){
+    area.innerHTML = '<div style="color:#dc2626;font-size:13px;">❌ 请求失败：'+e.message+'</div>';
+  }
+}
+</script>
 
 {% endblock %}
