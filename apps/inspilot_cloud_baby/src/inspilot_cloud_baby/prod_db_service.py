@@ -118,10 +118,14 @@ class ProdDBService:
         if not re.match(r"^(select|with)\b", sql_stripped, re.IGNORECASE):
             raise ValueError("只允许 SELECT 查询")
 
-        # Inject TOP clause if not present (SQL Server syntax)
+        # Inject TOP clause if not present (SQL Server syntax: SELECT [DISTINCT] TOP N)
         if not re.search(r"\btop\b", sql_stripped, re.IGNORECASE):
-            # Insert TOP N after SELECT
-            sql_stripped = re.sub(r"^(select)\b", "SELECT TOP " + str(max_rows), sql_stripped, count=1, flags=re.IGNORECASE)
+            # Insert TOP N after SELECT (and optional DISTINCT)
+            sql_stripped = re.sub(
+                r"^(select\s+(distinct\s+)?)(?=\s)",
+                r"\g<1>TOP " + str(max_rows) + " ",
+                sql_stripped, count=1, flags=re.IGNORECASE,
+            )
 
         logger.info("Executing prod DB query: %s", sql_stripped[:200])
         try:
