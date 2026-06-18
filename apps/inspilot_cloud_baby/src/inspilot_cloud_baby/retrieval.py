@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, func, or_, select
+from sqlalchemy import String, cast, func, or_, select
 
 from inspilot_cloud_baby.auth import CurrentUser
 from inspilot_cloud_baby.models import (
@@ -16,6 +16,11 @@ from inspilot_cloud_baby.models import (
     ProjectVisibility,
 )
 from inspilot_cloud_baby.permissions import can_read_knowledge
+from inspilot_cloud_baby.retrieval_evidence import (
+    ExplainedDocument,
+    RetrievalCandidate,
+    fuse_candidates,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -50,42 +55,63 @@ def retrieve_documents(
     db: Session | None = None,
     filters: dict | None = None,
 ) -> list[KnowledgeDocument]:
-    """Retrieve relevant knowledge documents.
+    return [
+        item.document
+        for item in retrieve_documents_explained(
+            query=query,
+            user=user,
+            documents=documents,
+            limit=limit,
+            db=db,
+            filters=filters,
+        )
+    ]
 
-    Strategy (degradation chain):
-      1. If *db* is provided and the embedding service is available → vector search.
-      2. On failure / no results → fall back to keyword search over *documents*.
 
-    *filters* optionally constrains results by metadata (region/insurer/integrator).
-    When None, region/insurer/integrator are auto-extracted from *query* text.
-    """
-    # Auto-extract intent filters from the query text if none were supplied
+def retrieve_documents_explained(
+    *,
+    query: str,
+    user: CurrentUser,
+    documents: list[KnowledgeDocument],
+    limit: int = 5,
+    db: Session | None = None,
+    filters: dict | None = None,
+) -> list[ExplainedDocument]:
+    """Run both recall channels and return permission-safe ranking evidence."""
     if filters is None and db is not None:
         filters = _extract_query_filters(query=query, db=db)
 
-    keyword_results: list[KnowledgeDocument] = []
+    keyword_candidates: list[RetrievalCandidate] = []
+    vector_candidates: list[RetrievalCandidate] = []
     if db is not None:
         try:
-            keyword_results = _retrieve_by_db_keyword(query=query, user=user, db=db, limit=limit)
-            if len(keyword_results) >= limit:
-                return keyword_results[:limit]
+            keyword_candidates = _retrieve_by_db_keyword_candidates(
+                query=query, user=user, db=db, limit=limit
+            )
         except Exception:
             logger.warning("DB keyword search failed, continuing with vector search", exc_info=True)
 
-    # --- try vector search first ---
     if db is not None:
         try:
-            vector_results = _retrieve_by_vector(
+            vector_candidates = _retrieve_by_vector_candidates(
                 query=query, user=user, db=db, limit=limit, filters=filters
             )
-            if vector_results:
-                return _merge_documents(keyword_results, vector_results, limit)
         except Exception:
             logger.warning("Vector search failed, falling back to keyword search", exc_info=True)
 
-    # --- keyword fallback (original logic) ---
-    fallback_results = _retrieve_by_keyword(query=query, user=user, documents=documents, limit=limit)
-    return _merge_documents(keyword_results, fallback_results, limit)
+    if not keyword_candidates and not vector_candidates:
+        fallback_results = _retrieve_by_keyword(
+            query=query, user=user, documents=documents, limit=limit
+        )
+        keyword_candidates = _documents_to_keyword_candidates(
+            fallback_results, query=query
+        )
+
+    return fuse_candidates(
+        keyword=keyword_candidates,
+        vector=vector_candidates,
+        limit=limit,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +271,7 @@ def _retrieve_by_db_keyword(
         pattern = f"%{term}%"
         clauses.append(KnowledgeItem.title.ilike(pattern))
         clauses.append(KnowledgeItem.body.ilike(pattern))
+        clauses.append(cast(KnowledgeItem.metadata_json, String).ilike(pattern))
 
     rows = db.execute(
         select(KnowledgeItem, Project.visibility)
@@ -285,6 +312,45 @@ def _retrieve_by_db_keyword(
 def _score(*, document: KnowledgeDocument, terms: list[str]) -> int:
     text = f"{document.title} {document.body}".lower()
     return sum(1 for term in terms if term in text)
+
+
+def _matched_fields(document: KnowledgeDocument, terms: list[str]) -> tuple[str, ...]:
+    values = {
+        "title": document.title.lower(),
+        "metadata": str(document.metadata).lower(),
+        "body": document.body.lower(),
+    }
+    return tuple(
+        field for field, value in values.items() if any(term.lower() in value for term in terms)
+    )
+
+
+def _documents_to_keyword_candidates(
+    documents: list[KnowledgeDocument],
+    *,
+    query: str,
+) -> list[RetrievalCandidate]:
+    terms = _query_terms(query)
+    return [
+        RetrievalCandidate(
+            document=document,
+            matched_fields=_matched_fields(document, terms),
+            keyword_score=_score(document=document, terms=terms),
+            keyword_rank=rank,
+        )
+        for rank, document in enumerate(documents, 1)
+    ]
+
+
+def _retrieve_by_db_keyword_candidates(
+    *,
+    query: str,
+    user: CurrentUser,
+    db: Session,
+    limit: int,
+) -> list[RetrievalCandidate]:
+    documents = _retrieve_by_db_keyword(query=query, user=user, db=db, limit=limit)
+    return _documents_to_keyword_candidates(documents, query=query)
 
 
 # ---------------------------------------------------------------------------
@@ -349,14 +415,14 @@ def _metadata_filter_clauses(filters: dict) -> list:
     return clauses
 
 
-def _retrieve_by_vector(
+def _retrieve_by_vector_candidates(
     *,
     query: str,
     user: CurrentUser,
     db: Session,
     limit: int,
     filters: dict | None = None,
-) -> list[KnowledgeDocument]:
+) -> list[RetrievalCandidate]:
     from inspilot_cloud_baby.embedding import get_embedding_service  # avoid circular import at module level
 
     svc = get_embedding_service()
@@ -369,20 +435,21 @@ def _retrieve_by_vector(
 
     filter_clauses = _metadata_filter_clauses(filters or {})
 
-    def _run(clauses: list) -> list[KnowledgeDocument]:
+    def _run(clauses: list) -> list[RetrievalCandidate]:
+        distance = KnowledgeItem.embedding.cosine_distance(query_vec).label("distance")
         stmt = (
-            select(KnowledgeItem, Project.visibility)
+            select(KnowledgeItem, Project.visibility, distance)
             .join(Project, KnowledgeItem.project_id == Project.id, isouter=True)
             .where(KnowledgeItem.embedding.isnot(None))
             .where(KnowledgeItem.status == KnowledgeStatus.ACTIVE)
         )
         for clause in clauses:
             stmt = stmt.where(clause)
-        stmt = stmt.order_by(KnowledgeItem.embedding.cosine_distance(query_vec)).limit(limit * 3)
+        stmt = stmt.order_by(distance).limit(limit * 3)
 
         rows = db.execute(stmt).all()
-        documents: list[KnowledgeDocument] = []
-        for item, visibility in rows:
+        candidates: list[RetrievalCandidate] = []
+        for item, visibility, distance_value in rows:
             doc = KnowledgeDocument(
                 id=str(item.id),
                 project_id=str(item.project_id) if item.project_id else None,
@@ -399,10 +466,16 @@ def _retrieve_by_vector(
                 project_visibility=doc.project_visibility,
                 sensitivity=doc.sensitivity,
             ):
-                documents.append(doc)
-            if len(documents) >= limit:
+                candidates.append(
+                    RetrievalCandidate(
+                        document=doc,
+                        vector_distance=float(distance_value),
+                        vector_rank=len(candidates) + 1,
+                    )
+                )
+            if len(candidates) >= limit:
                 break
-        return documents
+        return candidates
 
     # First pass: with filters (auto-extracted or manual)
     if filter_clauses:
@@ -414,3 +487,23 @@ def _retrieve_by_vector(
         return _run([])
 
     return _run([])
+
+
+def _retrieve_by_vector(
+    *,
+    query: str,
+    user: CurrentUser,
+    db: Session,
+    limit: int,
+    filters: dict | None = None,
+) -> list[KnowledgeDocument]:
+    return [
+        candidate.document
+        for candidate in _retrieve_by_vector_candidates(
+            query=query,
+            user=user,
+            db=db,
+            limit=limit,
+            filters=filters,
+        )
+    ]
