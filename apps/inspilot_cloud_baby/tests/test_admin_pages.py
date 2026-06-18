@@ -4,8 +4,15 @@ from fastapi.testclient import TestClient
 
 from inspilot_cloud_baby.config import settings
 from inspilot_cloud_baby.main import create_app
-from inspilot_cloud_baby.dingtalk_admin import WorkflowDoc
-from inspilot_cloud_baby.models import AppSetting, KnowledgeItem, KnowledgeSensitivity, KnowledgeStatus
+from inspilot_cloud_baby.dingtalk_admin import AdminWorkflowDetail, WorkflowDoc
+from inspilot_cloud_baby.models import (
+    AppSetting,
+    AuditLog,
+    KnowledgeItem,
+    KnowledgeSensitivity,
+    KnowledgeStatus,
+    Project,
+)
 from inspilot_cloud_baby.routers import admin
 
 
@@ -204,6 +211,8 @@ def test_knowledge_visibility_update_can_make_unassigned_dingtalk_item_public(mo
         def all(self):
             return []
 
+    added: list[object] = []
+
     class FakeSession:
         def __enter__(self):
             return self
@@ -218,6 +227,9 @@ def test_knowledge_visibility_update_can_make_unassigned_dingtalk_item_public(mo
 
         def scalars(self, statement):
             return FakeScalarResult()
+
+        def add(self, row):
+            added.append(row)
 
         def commit(self):
             return None
@@ -234,6 +246,98 @@ def test_knowledge_visibility_update_can_make_unassigned_dingtalk_item_public(mo
     assert item.project_id is None
     assert item.sensitivity == KnowledgeSensitivity.PUBLIC_SUMMARY
     assert "公开摘要" in response.text
+    audit = next(row for row in added if isinstance(row, AuditLog))
+    assert audit.actor_user_id == "admin:web"
+    assert audit.action == "knowledge.visibility.update"
+    assert audit.resource_id == str(item.id)
+    assert audit.metadata_json["before"]["sensitivity"] == "project_restricted"
+    assert audit.metadata_json["after"]["sensitivity"] == "public_summary"
+
+
+def test_project_create_adds_audit_in_same_session(monkeypatch) -> None:
+    added: list[object] = []
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def add(self, row):
+            added.append(row)
+
+        def flush(self):
+            project = next(row for row in added if isinstance(row, Project))
+            project.id = project.id or uuid.uuid4()
+
+        def commit(self):
+            return None
+
+    monkeypatch.setattr(admin, "SessionLocal", lambda: FakeSession())
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/admin/projects/create",
+        data={"name": "审计测试项目", "visibility": "restricted", "summary": "测试"},
+    )
+
+    assert response.status_code == 200
+    audit = next(row for row in added if isinstance(row, AuditLog))
+    assert audit.action == "project.create"
+    assert audit.actor_user_id == "admin:web"
+    assert audit.metadata_json == {"name": "审计测试项目", "visibility": "restricted"}
+
+
+def test_dingtalk_import_keeps_business_and_process_ids_separate(monkeypatch) -> None:
+    added: list[object] = []
+    detail = AdminWorkflowDetail(
+        process_instance_id="PROC-001",
+        business_id="202605281923000432811",
+        title="项目评估申请",
+        status="COMPLETED",
+        originator_user_id="user-1",
+    )
+
+    class FakeAdmin:
+        def get_detail(self, process_instance_id: str):
+            assert process_instance_id == "PROC-001"
+            return detail
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def add(self, row):
+            added.append(row)
+
+        def flush(self):
+            item = next(row for row in added if isinstance(row, KnowledgeItem))
+            item.id = item.id or uuid.uuid4()
+
+        def commit(self):
+            return None
+
+    monkeypatch.setattr(admin, "_admin_client", lambda: FakeAdmin())
+    monkeypatch.setattr(admin, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(admin, "_attach_embedding", lambda item: None)
+    client = TestClient(create_app())
+
+    response = client.post("/admin/dws/import", data={"workflow_id": "PROC-001"})
+
+    assert response.status_code == 200
+    item = next(row for row in added if isinstance(row, KnowledgeItem))
+    assert item.metadata_json["workflow_id"] == "PROC-001"
+    assert item.metadata_json["business_id"] == "202605281923000432811"
+    audit = next(row for row in added if isinstance(row, AuditLog))
+    assert audit.action == "dingtalk.import"
+    assert audit.metadata_json == {
+        "workflow_id": "PROC-001",
+        "business_id": "202605281923000432811",
+    }
 
 
 def test_dingtalk_knowledge_body_includes_approval_chain_details() -> None:

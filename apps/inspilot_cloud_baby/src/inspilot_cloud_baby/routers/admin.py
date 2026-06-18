@@ -9,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from inspilot_cloud_baby.audit import ADMIN_WEB_ACTOR, write_audit
 from inspilot_cloud_baby.config import settings
 from inspilot_cloud_baby.db import SessionLocal
 from inspilot_cloud_baby.dingtalk_admin import DingTalkAdminClient, WorkflowDoc
@@ -528,6 +529,15 @@ def ingest_confirm(
             )
             session.add(item)
             _attach_embedding(item)
+            session.flush()
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="knowledge.create",
+                resource_type="knowledge_item",
+                resource_id=str(item.id),
+                metadata={"source_type": item.source_type, "status": item.status.value},
+            )
             session.commit()
             return item.id
 
@@ -555,6 +565,15 @@ def project_create(
                 summary=summary,
             )
             session.add(project)
+            session.flush()
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="project.create",
+                resource_type="project",
+                resource_id=str(project.id),
+                metadata={"name": project.name, "visibility": project.visibility.value},
+            )
             session.commit()
             return project
 
@@ -576,7 +595,16 @@ def knowledge_update_status(request: Request, item_id: str, status: str = Form(.
             item = session.get(KnowledgeItem, uuid.UUID(item_id))
             if not item:
                 return None
+            before = item.status.value
             item.status = KnowledgeStatus(status)
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="knowledge.status.update",
+                resource_type="knowledge_item",
+                resource_id=str(item.id),
+                metadata={"before": {"status": before}, "after": {"status": item.status.value}},
+            )
             session.commit()
             project_name = ""
             if item.project_id:
@@ -610,8 +638,24 @@ def knowledge_update_visibility(
             item = session.get(KnowledgeItem, uuid.UUID(item_id))
             if not item:
                 return None
+            before = {
+                "project_id": str(item.project_id) if item.project_id else None,
+                "sensitivity": item.sensitivity.value,
+            }
             item.project_id = uuid.UUID(project_id) if project_id else None
             item.sensitivity = KnowledgeSensitivity(sensitivity)
+            after = {
+                "project_id": str(item.project_id) if item.project_id else None,
+                "sensitivity": item.sensitivity.value,
+            }
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="knowledge.visibility.update",
+                resource_type="knowledge_item",
+                resource_id=str(item.id),
+                metadata={"before": before, "after": after},
+            )
             session.commit()
 
             project_name = ""
@@ -640,6 +684,20 @@ def knowledge_delete(request: Request, item_id: str):
         with SessionLocal() as session:
             item = session.get(KnowledgeItem, uuid.UUID(item_id))
             if item:
+                write_audit(
+                    session,
+                    actor_user_id=ADMIN_WEB_ACTOR,
+                    action="knowledge.delete",
+                    resource_type="knowledge_item",
+                    resource_id=str(item.id),
+                    metadata={
+                        "title": item.title,
+                        "source_type": item.source_type,
+                        "project_id": str(item.project_id) if item.project_id else None,
+                        "sensitivity": item.sensitivity.value,
+                        "status": item.status.value,
+                    },
+                )
                 session.delete(item)
                 session.commit()
 
@@ -787,7 +845,8 @@ def dws_import(
                 status=KnowledgeStatus.PENDING_REVIEW,
                 project_id=uuid.UUID(project_id) if project_id else None,
                 metadata_json={
-                    "workflow_id": workflow_id,
+                    "workflow_id": detail.process_instance_id,
+                    "business_id": detail.business_id,
                     "workflow_status": workflow.status,
                     "originator": workflow.originator,
                     "form_fields": list(workflow.form_data.keys()),
@@ -796,6 +855,18 @@ def dws_import(
             )
             session.add(item)
             _attach_embedding(item)
+            session.flush()
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="dingtalk.import",
+                resource_type="knowledge_item",
+                resource_id=str(item.id),
+                metadata={
+                    "workflow_id": detail.process_instance_id,
+                    "business_id": detail.business_id,
+                },
+            )
             session.commit()
             return item.id
 
@@ -885,41 +956,52 @@ def dws_batch_import(
 
     result = admin.batch_get_details(ids)
     imported_count = 0
-    errors: list[dict] = []
+    errors: list[dict] = list(result.failed)
 
-    for detail in result.succeeded:
-        try:
-            workflow = DingTalkAdminClient.to_workflow(detail)
-            body = _build_dingtalk_knowledge_body(workflow)
+    try:
+        with SessionLocal() as session:
+            imported_ids: list[str] = []
+            for detail in result.succeeded:
+                workflow = DingTalkAdminClient.to_workflow(detail)
+                body = _build_dingtalk_knowledge_body(workflow)
+                item = KnowledgeItem(
+                    title=f"[钉钉审批] {detail.title or detail.process_instance_id}",
+                    body=body,
+                    source_type="dingtalk_approval",
+                    sensitivity=KnowledgeSensitivity.PROJECT_RESTRICTED,
+                    status=KnowledgeStatus.PENDING_REVIEW,
+                    project_id=uuid.UUID(project_id) if project_id else None,
+                    metadata_json={
+                        "workflow_id": detail.process_instance_id,
+                        "business_id": detail.business_id,
+                        "workflow_status": detail.status,
+                        "originator": detail.originator_user_id,
+                        "form_fields": list(detail.form_data.keys()),
+                    },
+                    created_by="dingtalk_batch_import",
+                )
+                session.add(item)
+                _attach_embedding(item)
+                session.flush()
+                imported_ids.append(str(item.id))
+            imported_count = len(imported_ids)
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="dingtalk.batch_import",
+                resource_type="knowledge_batch",
+                resource_id=",".join(imported_ids),
+                metadata={
+                    "requested_count": len(ids),
+                    "success_count": imported_count,
+                    "failure_count": len(errors),
+                },
+            )
+            session.commit()
+    except Exception as exc:  # noqa: BLE001 - returned in the batch result
+        imported_count = 0
+        errors.append({"id": "database", "error": str(exc)})
 
-            def _query(pid=detail.process_instance_id, b=body, t=detail.title, st=detail.status):
-                with SessionLocal() as session:
-                    item = KnowledgeItem(
-                        title=f"[钉钉审批] {t or pid}",
-                        body=b,
-                        source_type="dingtalk_approval",
-                        sensitivity=KnowledgeSensitivity.PROJECT_RESTRICTED,
-                        status=KnowledgeStatus.PENDING_REVIEW,
-                        project_id=uuid.UUID(project_id) if project_id else None,
-                        metadata_json={
-                            "workflow_id": pid,
-                            "workflow_status": st,
-                            "originator": detail.originator_user_id,
-                            "form_fields": list(detail.form_data.keys()),
-                        },
-                        created_by="dingtalk_batch_import",
-                    )
-                    session.add(item)
-                    _attach_embedding(item)
-                    session.commit()
-                    return item.id
-
-            _db_query(_query)
-            imported_count += 1
-        except Exception as exc:
-            errors.append({"id": detail.process_instance_id, "error": str(exc)})
-
-    errors.extend(result.failed)
     return templates.TemplateResponse(
         request, "partials/_dws_batch_success.html",
         _ctx(request, imported_count=imported_count, total=len(ids), errors=errors),
