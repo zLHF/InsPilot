@@ -203,6 +203,25 @@ def test_comment_permission_error_is_not_reported_as_empty_success() -> None:
     assert result.error_type == "permission_denied"
 
 
+def test_invalid_comment_api_name_is_reported_as_unavailable() -> None:
+    client = DingTalkAdminClient("key", "secret")
+    with patch.object(
+        client,
+        "_topapi_post",
+        return_value={
+            "errcode": 3,
+            "errmsg": (
+                "Invalid method[submsg=不合法ApiName，"
+                "ApiName = dingtalk.oapi.processinstance.comment.list]"
+            ),
+        },
+    ):
+        result = client.get_comments("PROC-1")
+
+    assert result.status == "unavailable"
+    assert result.error_type == "api_unavailable"
+
+
 def test_duplicate_comment_merges_into_operation_record() -> None:
     records = [
         {

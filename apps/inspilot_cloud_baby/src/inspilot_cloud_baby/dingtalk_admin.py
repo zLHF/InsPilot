@@ -444,10 +444,18 @@ class DingTalkAdminClient:
                     process_instance_id, message,
                 )
                 permission_denied = "权限" in message or "permission" in message.lower()
+                api_unavailable = "不合法ApiName" in message or "invalid method" in message.lower()
+                unavailable = permission_denied or api_unavailable
                 return CommentFetchResult(
-                    status="unavailable" if permission_denied else "error",
+                    status="unavailable" if unavailable else "error",
                     comments=tuple(comments),
-                    error_type="permission_denied" if permission_denied else "api_error",
+                    error_type=(
+                        "permission_denied"
+                        if permission_denied
+                        else "api_unavailable"
+                        if api_unavailable
+                        else "api_error"
+                    ),
                     message=message,
                 )
             result = data.get("result", {})
