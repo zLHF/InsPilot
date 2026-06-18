@@ -49,6 +49,7 @@ def test_settings_page_renders_dingtalk_credentials_form() -> None:
 
 def test_settings_save_persists_dingtalk_credentials(monkeypatch) -> None:
     saved: dict[str, AppSetting] = {}
+    audits: list[AuditLog] = []
 
     class FakeSession:
         def __init__(self):
@@ -64,7 +65,10 @@ def test_settings_save_persists_dingtalk_credentials(monkeypatch) -> None:
             return saved.get(key)
 
         def add(self, row):
-            saved[row.key] = row
+            if isinstance(row, AppSetting):
+                saved[row.key] = row
+            else:
+                audits.append(row)
 
         def commit(self):
             return None
@@ -84,6 +88,13 @@ def test_settings_save_persists_dingtalk_credentials(monkeypatch) -> None:
     assert response.status_code == 303
     assert saved["dingtalk_app_key"].value == "ding-key"
     assert saved["dingtalk_app_secret"].value == "ding-secret"
+    assert len(audits) == 1
+    assert audits[0].action == "config.update"
+    assert audits[0].metadata_json == {
+        "changed_keys": ["dingtalk_app_key", "dingtalk_app_secret", "enable_vector_search"],
+        "secret_keys_changed": ["dingtalk_app_secret"],
+    }
+    assert "ding-secret" not in repr(audits[0].metadata_json)
 
 
 def test_dingtalk_admin_client_uses_db_credentials_when_env_empty(monkeypatch) -> None:
@@ -107,6 +118,7 @@ def test_dingtalk_admin_client_uses_db_credentials_when_env_empty(monkeypatch) -
 
 def test_dingtalk_settings_test_uses_current_form_values(monkeypatch) -> None:
     seen: dict[str, str] = {}
+    audits: list[AuditLog] = []
 
     class FakeDingTalkClient:
         def __init__(self, app_key: str, app_secret: str) -> None:
@@ -117,6 +129,22 @@ def test_dingtalk_settings_test_uses_current_form_values(monkeypatch) -> None:
             return True, ""
 
     monkeypatch.setattr(admin, "DingTalkAdminClient", FakeDingTalkClient)
+    monkeypatch.setattr(admin, "_get_dingtalk_config", lambda: {"app_key": "", "app_secret": ""})
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def add(self, row):
+            audits.append(row)
+
+        def commit(self):
+            return None
+
+    monkeypatch.setattr(admin, "SessionLocal", lambda: FakeSession())
     client = TestClient(create_app())
 
     response = client.post(
@@ -130,6 +158,14 @@ def test_dingtalk_settings_test_uses_current_form_values(monkeypatch) -> None:
     assert response.status_code == 200
     assert "连接成功" in response.text
     assert seen == {"app_key": "form-key", "app_secret": "form-secret"}
+    assert len(audits) == 1
+    assert audits[0].action == "config.test"
+    assert audits[0].metadata_json == {
+        "service": "dingtalk",
+        "ok": True,
+        "error_type": "",
+    }
+    assert "form-secret" not in repr(audits[0].metadata_json)
 
 
 def test_dingtalk_settings_test_requires_credentials(monkeypatch) -> None:

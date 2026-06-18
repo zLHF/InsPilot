@@ -9,7 +9,11 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from inspilot_cloud_baby.audit import ADMIN_WEB_ACTOR, write_audit
+from inspilot_cloud_baby.audit import (
+    ADMIN_WEB_ACTOR,
+    config_change_metadata,
+    write_audit,
+)
 from inspilot_cloud_baby.config import settings
 from inspilot_cloud_baby.db import SessionLocal
 from inspilot_cloud_baby.dingtalk_admin import DingTalkAdminClient, WorkflowDoc
@@ -1045,6 +1049,27 @@ def _save_setting(session: Session, key: str, value: str) -> None:
         session.add(AppSetting(key=key, value=value))
 
 
+def _settings_snapshot(session: Session) -> dict[str, str]:
+    return {
+        key: row.value
+        for key in _SETTINGS_KEYS
+        if (row := session.get(AppSetting, key)) is not None
+    }
+
+
+def _record_config_test(*, service: str, ok: bool, error_type: str = "") -> None:
+    with SessionLocal() as session:
+        write_audit(
+            session,
+            actor_user_id=ADMIN_WEB_ACTOR,
+            action="config.test",
+            resource_type="integration_config",
+            resource_id=service,
+            metadata={"service": service, "ok": ok, "error_type": error_type},
+        )
+        session.commit()
+
+
 @router.get("/settings")
 def settings_page(request: Request, saved: str = ""):
     """System settings page — shows current config and status."""
@@ -1152,6 +1177,7 @@ def settings_save(
 
     def _query():
         with SessionLocal() as session:
+            before = _settings_snapshot(session)
             if dingtalk_app_key.strip():
                 _save_setting(session, "dingtalk_app_key", dingtalk_app_key.strip())
             if dingtalk_app_secret.strip():
@@ -1186,6 +1212,15 @@ def settings_save(
                 _save_setting(session, "prod_db_user", prod_db_user.strip())
             if prod_db_password.strip():
                 _save_setting(session, "prod_db_password", prod_db_password.strip())
+            after = _settings_snapshot(session)
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="config.update",
+                resource_type="integration_config",
+                resource_id="settings",
+                metadata=config_change_metadata(before=before, after=after),
+            )
             session.commit()
 
     try:
@@ -1296,6 +1331,9 @@ def settings_test(request: Request):
     model = body.get("model", "").strip() or saved["model"]
 
     if not api_key:
+        _record_config_test(
+            service="embedding", ok=False, error_type="missing_configuration"
+        )
         return templates.TemplateResponse(
             request,
             "partials/_settings_test.html",
@@ -1306,6 +1344,7 @@ def settings_test(request: Request):
     vector = svc.embed_text("测试连接")
 
     if vector is not None:
+        _record_config_test(service="embedding", ok=True)
         dim = len(vector)
         endpoint = base_url or "https://api.openai.com/v1 (官方)"
         return templates.TemplateResponse(
@@ -1320,6 +1359,7 @@ def settings_test(request: Request):
         )
 
     endpoint = base_url or "https://api.openai.com/v1 (官方)"
+    _record_config_test(service="embedding", ok=False, error_type="connection_failed")
     return templates.TemplateResponse(
         request,
         "partials/_settings_test.html",
@@ -1350,12 +1390,14 @@ def settings_chat_test(request: Request):
     model = body.get("model", "").strip() or saved["model"]
 
     if not api_key:
+        _record_config_test(service="chat", ok=False, error_type="missing_configuration")
         return templates.TemplateResponse(
             request,
             "partials/_settings_test.html",
             _ctx(request, test_ok=False, test_message="未配置对话模型 API Key。请先填写。"),
         )
     if not model:
+        _record_config_test(service="chat", ok=False, error_type="missing_configuration")
         return templates.TemplateResponse(
             request,
             "partials/_settings_test.html",
@@ -1367,6 +1409,7 @@ def settings_chat_test(request: Request):
 
     endpoint = base_url or "https://api.openai.com/v1 (官方)"
     if reply:
+        _record_config_test(service="chat", ok=True)
         snippet = reply.strip()[:60]
         return templates.TemplateResponse(
             request,
@@ -1377,6 +1420,7 @@ def settings_chat_test(request: Request):
                 test_endpoint=endpoint,
             ),
         )
+    _record_config_test(service="chat", ok=False, error_type="connection_failed")
     return templates.TemplateResponse(
         request,
         "partials/_settings_test.html",
@@ -1403,6 +1447,9 @@ def settings_dingtalk_test(request: Request):
     app_secret = body.get("app_secret", "").strip() or saved["app_secret"]
 
     if not app_key or not app_secret:
+        _record_config_test(
+            service="dingtalk", ok=False, error_type="missing_configuration"
+        )
         return templates.TemplateResponse(
             request,
             "partials/_settings_test.html",
@@ -1410,6 +1457,11 @@ def settings_dingtalk_test(request: Request):
         )
 
     ok, message = DingTalkAdminClient(app_key, app_secret).test_connection()
+    _record_config_test(
+        service="dingtalk",
+        ok=ok,
+        error_type="" if ok else "connection_failed",
+    )
     if ok:
         return templates.TemplateResponse(
             request,
@@ -1441,6 +1493,9 @@ def settings_db_test(request: Request):
     password = body.get("password", "").strip()
 
     if not host:
+        _record_config_test(
+            service="production_db", ok=False, error_type="missing_configuration"
+        )
         return templates.TemplateResponse(
             request,
             "partials/_settings_test.html",
@@ -1449,6 +1504,11 @@ def settings_db_test(request: Request):
 
     svc = ProdDBService(host=host, port=int(port), database=database, user=user, password=password)
     ok, msg = svc.test_connection()
+    _record_config_test(
+        service="production_db",
+        ok=ok,
+        error_type="" if ok else "connection_failed",
+    )
     return templates.TemplateResponse(
         request,
         "partials/_settings_test.html",
