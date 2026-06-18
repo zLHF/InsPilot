@@ -4,7 +4,12 @@ from fastapi.testclient import TestClient
 
 from inspilot_cloud_baby.config import settings
 from inspilot_cloud_baby.main import create_app
-from inspilot_cloud_baby.dingtalk_admin import AdminWorkflowDetail, WorkflowDoc
+from inspilot_cloud_baby.dingtalk_admin import (
+    AdminWorkflowDetail,
+    CapabilityStatus,
+    DingTalkCapabilities,
+    WorkflowDoc,
+)
 from inspilot_cloud_baby.models import (
     AppSetting,
     AuditLog,
@@ -45,6 +50,7 @@ def test_settings_page_renders_dingtalk_credentials_form() -> None:
     assert 'name="dingtalk_app_secret"' in response.text
     assert "testDingTalk()" in response.text
     assert 'id="test-dingtalk"' in response.text
+    assert 'id="dingtalk_test_process_instance_id"' in response.text
 
 
 def test_settings_save_persists_dingtalk_credentials(monkeypatch) -> None:
@@ -125,8 +131,13 @@ def test_dingtalk_settings_test_uses_current_form_values(monkeypatch) -> None:
             seen["app_key"] = app_key
             seen["app_secret"] = app_secret
 
-        def test_connection(self) -> tuple[bool, str]:
-            return True, ""
+        def test_capabilities(self, process_instance_id: str) -> DingTalkCapabilities:
+            seen["process_instance_id"] = process_instance_id
+            return DingTalkCapabilities(
+                token=CapabilityStatus(status="ok"),
+                approval_detail=CapabilityStatus(status="ok"),
+                comments=CapabilityStatus(status="unavailable", message="无接口访问权限"),
+            )
 
     monkeypatch.setattr(admin, "DingTalkAdminClient", FakeDingTalkClient)
     monkeypatch.setattr(admin, "_get_dingtalk_config", lambda: {"app_key": "", "app_secret": ""})
@@ -150,20 +161,30 @@ def test_dingtalk_settings_test_uses_current_form_values(monkeypatch) -> None:
     response = client.post(
         "/admin/settings/dingtalk-test",
         headers={
-            "X-Test-Body": '{"app_key":"form-key","app_secret":"form-secret"}',
+            "X-Test-Body": (
+                '{"app_key":"form-key","app_secret":"form-secret",'
+                '"process_instance_id":"PROC-1"}'
+            ),
         },
         json={},
     )
 
     assert response.status_code == 200
-    assert "连接成功" in response.text
-    assert seen == {"app_key": "form-key", "app_secret": "form-secret"}
+    assert "钉钉能力测试结果" in response.text
+    assert seen == {
+        "app_key": "form-key",
+        "app_secret": "form-secret",
+        "process_instance_id": "PROC-1",
+    }
+    assert "基础连接" in response.text
+    assert "审批详情" in response.text
+    assert "独立评论" in response.text
     assert len(audits) == 1
     assert audits[0].action == "config.test"
     assert audits[0].metadata_json == {
         "service": "dingtalk",
         "ok": True,
-        "error_type": "",
+        "error_type": "comments_unavailable",
     }
     assert "form-secret" not in repr(audits[0].metadata_json)
 

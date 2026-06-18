@@ -1463,6 +1463,7 @@ def settings_dingtalk_test(request: Request):
     saved = _get_dingtalk_config()
     app_key = body.get("app_key", "").strip() or saved["app_key"]
     app_secret = body.get("app_secret", "").strip() or saved["app_secret"]
+    process_instance_id = body.get("process_instance_id", "").strip()
 
     if not app_key or not app_secret:
         _record_config_test(
@@ -1474,22 +1475,42 @@ def settings_dingtalk_test(request: Request):
             _ctx(request, test_ok=False, test_message="未配置钉钉 AppKey 或 AppSecret。请先填写。"),
         )
 
-    ok, message = DingTalkAdminClient(app_key, app_secret).test_connection()
+    capabilities = DingTalkAdminClient(app_key, app_secret).test_capabilities(
+        process_instance_id
+    )
+    ok = capabilities.token.status == "ok" and capabilities.approval_detail.status in {
+        "ok",
+        "not_tested",
+    }
+    error_type = ""
+    if capabilities.token.status != "ok":
+        error_type = "connection_failed"
+    elif capabilities.approval_detail.status == "failed":
+        error_type = "approval_detail_failed"
+    elif capabilities.comments.status in {"failed", "unavailable"}:
+        error_type = "comments_unavailable"
     _record_config_test(
         service="dingtalk",
         ok=ok,
-        error_type="" if ok else "connection_failed",
+        error_type=error_type,
     )
-    if ok:
-        return templates.TemplateResponse(
-            request,
-            "partials/_settings_test.html",
-            _ctx(request, test_ok=True, test_message="✅ 连接成功。钉钉 access_token 获取正常。"),
-        )
     return templates.TemplateResponse(
         request,
         "partials/_settings_test.html",
-        _ctx(request, test_ok=False, test_message=f"❌ 连接失败：{message}"),
+        _ctx(
+            request,
+            test_ok=ok,
+            test_message="钉钉开放平台能力测试完成。",
+            capability_results=[
+                ("基础连接", capabilities.token.status, capabilities.token.message),
+                (
+                    "审批详情",
+                    capabilities.approval_detail.status,
+                    capabilities.approval_detail.message,
+                ),
+                ("独立评论", capabilities.comments.status, capabilities.comments.message),
+            ],
+        ),
     )
 
 

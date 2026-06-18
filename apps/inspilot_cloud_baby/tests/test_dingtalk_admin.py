@@ -7,7 +7,9 @@ from inspilot_cloud_baby.dingtalk_admin import (
     AdminAttachment,
     AdminComment,
     AdminWorkflowDetail,
+    CapabilityStatus,
     CommentFetchResult,
+    DingTalkCapabilities,
     DingTalkAdminClient,
     WorkflowDoc,
     merge_approval_remarks,
@@ -228,3 +230,26 @@ def test_duplicate_comment_merges_into_operation_record() -> None:
     assert merged[0].comment_id == "c1"
     assert merged[0].content == "  同意。 "
     assert merged[0].sources == ("operation", "comment")
+
+
+def test_dingtalk_capabilities_report_independent_states() -> None:
+    client = DingTalkAdminClient("key", "secret")
+    with (
+        patch.object(client, "_ensure_token", return_value="token"),
+        patch.object(client, "get_instance_detail", return_value={"title": "审批"}),
+        patch.object(
+            client,
+            "get_comments",
+            return_value=CommentFetchResult(
+                status="unavailable",
+                error_type="permission_denied",
+                message="无接口访问权限",
+            ),
+        ),
+    ):
+        result = client.test_capabilities("PROC-1")
+
+    assert isinstance(result, DingTalkCapabilities)
+    assert result.token == CapabilityStatus(status="ok")
+    assert result.approval_detail == CapabilityStatus(status="ok")
+    assert result.comments.status == "unavailable"

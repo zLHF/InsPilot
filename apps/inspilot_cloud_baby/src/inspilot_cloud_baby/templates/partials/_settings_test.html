@@ -1,4 +1,14 @@
-{% if test_ok %}
+{% if capability_results %}
+<div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:14px 16px;">
+  <h4 style="font-size:14px;font-weight:600;margin-bottom:8px;">钉钉能力测试结果</h4>
+  {% for label, status, message in capability_results %}
+  <div style="display:flex;gap:8px;align-items:flex-start;margin-top:6px;font-size:13px;">
+    <strong style="min-width:72px;">{{ label }}</strong>
+    <span>{% if status == 'ok' %}通过{% elif status == 'not_tested' %}未测试{% elif status == 'unavailable' %}权限不可用{% else %}失败{% endif %}{% if message %}：{{ message }}{% endif %}</span>
+  </div>
+  {% endfor %}
+</div>
+{% elif test_ok %}
 <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:14px 16px;">
   <div style="display:flex;align-items:flex-start;gap:10px;">
     <span style="font-size:22px;">✅</span>

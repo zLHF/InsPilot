@@ -50,6 +50,19 @@ class CommentFetchResult:
 
 
 @dataclass(frozen=True)
+class CapabilityStatus:
+    status: Literal["ok", "failed", "unavailable", "not_tested"]
+    message: str = ""
+
+
+@dataclass(frozen=True)
+class DingTalkCapabilities:
+    token: CapabilityStatus
+    approval_detail: CapabilityStatus
+    comments: CapabilityStatus
+
+
+@dataclass(frozen=True)
 class ApprovalRemark:
     user_id: str
     timestamp: str
@@ -715,6 +728,55 @@ class DingTalkAdminClient:
             return True, ""
         except Exception as exc:  # noqa: BLE001 — surfaced as connection status
             return False, str(exc)
+
+    def test_capabilities(self, process_instance_id: str = "") -> DingTalkCapabilities:
+        try:
+            self._ensure_token()
+            token = CapabilityStatus(status="ok")
+        except Exception as exc:  # noqa: BLE001 - returned as capability status
+            failed = CapabilityStatus(status="failed", message=str(exc))
+            return DingTalkCapabilities(
+                token=failed,
+                approval_detail=CapabilityStatus(
+                    status="not_tested", message="基础连接失败，未测试审批详情。"
+                ),
+                comments=CapabilityStatus(
+                    status="not_tested", message="基础连接失败，未测试独立评论。"
+                ),
+            )
+
+        if not process_instance_id:
+            not_tested = CapabilityStatus(
+                status="not_tested", message="需要审批实例 ID 才能验证。"
+            )
+            return DingTalkCapabilities(
+                token=token,
+                approval_detail=not_tested,
+                comments=not_tested,
+            )
+
+        try:
+            self.get_instance_detail(process_instance_id)
+            approval_detail = CapabilityStatus(status="ok")
+        except Exception as exc:  # noqa: BLE001 - returned as capability status
+            approval_detail = CapabilityStatus(status="failed", message=str(exc))
+
+        try:
+            result = self.get_comments(process_instance_id)
+            comment_status = {
+                "available": "ok",
+                "unavailable": "unavailable",
+                "error": "failed",
+            }[result.status]
+            comments = CapabilityStatus(status=comment_status, message=result.message)
+        except Exception as exc:  # noqa: BLE001 - returned as capability status
+            comments = CapabilityStatus(status="failed", message=str(exc))
+
+        return DingTalkCapabilities(
+            token=token,
+            approval_detail=approval_detail,
+            comments=comments,
+        )
 
     # ------------------------------------------------------------------
     # Recent instance listing (approximation of a pending/todo list)
