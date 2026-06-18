@@ -149,16 +149,34 @@ def _build_dingtalk_knowledge_body(workflow: WorkflowDoc) -> str:
     if workflow.operation_records:
         body_parts.append("\n## 审批链条")
         for rec in workflow.operation_records:
+            if workflow.remarks and str(rec.get("remark", "")).strip():
+                continue
             body_parts.append(f"- {_format_operation_record(rec)}")
 
-    if workflow.comments:
-        body_parts.append("\n## 评论")
+    if workflow.remarks:
+        body_parts.append("\n## 审批意见")
+        for remark in workflow.remarks:
+            details = [
+                remark.get("timestamp", ""),
+                remark.get("user_id", "未知"),
+                remark.get("node_name", ""),
+                remark.get("operation_result", ""),
+            ]
+            prefix = " / ".join(str(value) for value in details if value)
+            body_parts.append(f"- {prefix}: {remark.get('content', '')}")
+    elif workflow.comments:
+        body_parts.append("\n## 审批意见")
         for comment in workflow.comments:
             body_parts.append(
                 f"- **{comment.get('user_id', '未知')}**"
                 f"{' @ ' + comment.get('timestamp', '') if comment.get('timestamp') else ''}: "
                 f"{comment.get('content', '')}"
             )
+
+    if workflow.comment_status in {"unavailable", "error"}:
+        body_parts.append(
+            "\n> 独立评论接口不可用，审批意见已按审批操作记录降级导入。"
+        )
 
     if workflow.attachments:
         body_parts.append("\n## 附件")

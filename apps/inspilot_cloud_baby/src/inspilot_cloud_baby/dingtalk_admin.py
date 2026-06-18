@@ -3,9 +3,11 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import re
 import time
 import urllib.request
 from dataclasses import dataclass, field
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,93 @@ class AdminComment:
 
 
 @dataclass(frozen=True)
+class CommentFetchResult:
+    status: Literal["available", "unavailable", "error"]
+    comments: tuple[AdminComment, ...] = ()
+    error_type: str = ""
+    message: str = ""
+
+
+@dataclass(frozen=True)
+class ApprovalRemark:
+    user_id: str
+    timestamp: str
+    content: str
+    node_name: str = ""
+    operation_type: str = ""
+    operation_result: str = ""
+    comment_id: str = ""
+    sources: tuple[str, ...] = ()
+
+
+def _normalize_remark_content(content: str) -> str:
+    normalized = re.sub(r"\s+", " ", content.strip()).casefold()
+    return re.sub(r"[。．.!！?？]+$", "", normalized)
+
+
+def _remark_key(user_id: str, timestamp: str, content: str) -> tuple[str, str, str]:
+    return user_id, timestamp[:16], _normalize_remark_content(content)
+
+
+def merge_approval_remarks(
+    operation_records: list[dict],
+    comments: list[AdminComment] | tuple[AdminComment, ...],
+) -> list[ApprovalRemark]:
+    merged: dict[tuple[str, str, str], ApprovalRemark] = {}
+    for record in operation_records:
+        content = str(record.get("remark", ""))
+        if not content.strip():
+            continue
+        user_id = str(
+            record.get("userid")
+            or record.get("userId")
+            or record.get("creatorUserId")
+            or ""
+        )
+        timestamp = str(record.get("date_formatted") or record.get("date") or "")
+        key = _remark_key(user_id, timestamp, content)
+        merged[key] = ApprovalRemark(
+            user_id=user_id,
+            timestamp=timestamp,
+            content=content,
+            node_name=str(record.get("task_name") or record.get("taskName") or ""),
+            operation_type=str(
+                record.get("operation_type") or record.get("operationType") or ""
+            ),
+            operation_result=str(
+                record.get("operation_result")
+                or record.get("operationResult")
+                or record.get("result")
+                or ""
+            ),
+            sources=("operation",),
+        )
+    for comment in comments:
+        key = _remark_key(comment.user_id, comment.timestamp, comment.content)
+        existing = merged.get(key)
+        if existing:
+            merged[key] = ApprovalRemark(
+                user_id=existing.user_id,
+                timestamp=existing.timestamp,
+                content=existing.content,
+                node_name=existing.node_name,
+                operation_type=existing.operation_type,
+                operation_result=existing.operation_result,
+                comment_id=comment.comment_id,
+                sources=("operation", "comment"),
+            )
+        else:
+            merged[key] = ApprovalRemark(
+                user_id=comment.user_id,
+                timestamp=comment.timestamp,
+                content=comment.content,
+                comment_id=comment.comment_id,
+                sources=("comment",),
+            )
+    return list(merged.values())
+
+
+@dataclass(frozen=True)
 class AdminWorkflowDetail:
     """Parsed result from /topapi/processinstance/get."""
 
@@ -53,6 +142,9 @@ class AdminWorkflowDetail:
     operation_records: list[dict] = field(default_factory=list)
     attachments: list[AdminAttachment] = field(default_factory=list)
     comments: list[AdminComment] = field(default_factory=list)
+    comment_status: str = "available"
+    comment_error_type: str = ""
+    remarks: list[ApprovalRemark] = field(default_factory=list)
     raw: dict = field(default_factory=dict)
 
 
@@ -80,6 +172,9 @@ class WorkflowDoc:
     operation_records: list[dict] = field(default_factory=list)
     attachments: list[dict] = field(default_factory=list)
     comments: list[dict] = field(default_factory=list)
+    comment_status: str = "available"
+    comment_error_type: str = ""
+    remarks: list[dict] = field(default_factory=list)
     raw_json: dict = field(default_factory=dict)
 
 
@@ -320,7 +415,7 @@ class DingTalkAdminClient:
     # Comments
     # ------------------------------------------------------------------
 
-    def get_comments(self, process_instance_id: str) -> list[AdminComment]:
+    def get_comments(self, process_instance_id: str) -> CommentFetchResult:
         """Fetch all comments for an approval instance."""
         comments: list[AdminComment] = []
         cursor = 0
@@ -330,11 +425,18 @@ class DingTalkAdminClient:
                 {"process_instance_id": process_instance_id, "cursor": cursor, "size": 20},
             )
             if data.get("errcode") != 0:
+                message = str(data.get("errmsg", ""))
                 logger.warning(
                     "comment list failed for %s: %s",
-                    process_instance_id, data.get("errmsg", ""),
+                    process_instance_id, message,
                 )
-                break
+                permission_denied = "权限" in message or "permission" in message.lower()
+                return CommentFetchResult(
+                    status="unavailable" if permission_denied else "error",
+                    comments=tuple(comments),
+                    error_type="permission_denied" if permission_denied else "api_error",
+                    message=message,
+                )
             result = data.get("result", {})
             for c in result.get("list", []):
                 comments.append(AdminComment(
@@ -348,7 +450,7 @@ class DingTalkAdminClient:
             if not next_cursor:
                 break
             cursor = next_cursor
-        return comments
+        return CommentFetchResult(status="available", comments=tuple(comments))
 
     # ------------------------------------------------------------------
     # High-level detail fetch (with comments)
@@ -360,10 +462,20 @@ class DingTalkAdminClient:
         detail = self.parse_detail(raw)
         # Fetch comments (graceful: don't block on failure)
         try:
-            comments = self.get_comments(process_instance_id)
-        except Exception:
+            comment_result = self.get_comments(process_instance_id)
+            if isinstance(comment_result, list):
+                comment_result = CommentFetchResult(
+                    status="available", comments=tuple(comment_result)
+                )
+        except Exception as exc:
             logger.warning("Failed to fetch comments for %s", process_instance_id, exc_info=True)
-            comments = []
+            comment_result = CommentFetchResult(
+                status="error",
+                error_type="transport_error",
+                message=str(exc),
+            )
+        comments = list(comment_result.comments)
+        remarks = merge_approval_remarks(detail.operation_records, comments)
         # Return new instance with comments (frozen dataclass).
         # NOTE: /topapi/processinstance/get does NOT echo back process_instance_id,
         # so we set it from the caller's argument (parse_detail leaves it blank).
@@ -378,6 +490,9 @@ class DingTalkAdminClient:
             operation_records=detail.operation_records,
             attachments=detail.attachments,
             comments=comments,
+            comment_status=comment_result.status,
+            comment_error_type=comment_result.error_type,
+            remarks=remarks,
             raw=detail.raw,
         )
 
@@ -431,6 +546,21 @@ class DingTalkAdminClient:
             comments=[
                 {"user_id": c.user_id, "content": c.content, "timestamp": c.timestamp}
                 for c in detail.comments
+            ],
+            comment_status=detail.comment_status,
+            comment_error_type=detail.comment_error_type,
+            remarks=[
+                {
+                    "user_id": remark.user_id,
+                    "timestamp": remark.timestamp,
+                    "content": remark.content,
+                    "node_name": remark.node_name,
+                    "operation_type": remark.operation_type,
+                    "operation_result": remark.operation_result,
+                    "comment_id": remark.comment_id,
+                    "sources": list(remark.sources),
+                }
+                for remark in detail.remarks
             ],
             raw_json=detail.raw,
         )

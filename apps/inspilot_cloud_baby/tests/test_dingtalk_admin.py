@@ -7,8 +7,10 @@ from inspilot_cloud_baby.dingtalk_admin import (
     AdminAttachment,
     AdminComment,
     AdminWorkflowDetail,
+    CommentFetchResult,
     DingTalkAdminClient,
     WorkflowDoc,
+    merge_approval_remarks,
 )
 
 
@@ -182,3 +184,47 @@ def test_list_recent_instances_skips_detail_errors() -> None:
     # "good" succeeded, "bad" raised and was skipped — only 1 result
     assert len(results) == 1
     assert results[0].title == "车险费率变更申请"
+
+
+def test_comment_permission_error_is_not_reported_as_empty_success() -> None:
+    client = DingTalkAdminClient("key", "secret")
+    with patch.object(
+        client,
+        "_topapi_post",
+        return_value={"errcode": 88, "errmsg": "无接口访问权限"},
+    ):
+        result = client.get_comments("PROC-1")
+
+    assert isinstance(result, CommentFetchResult)
+    assert result.status == "unavailable"
+    assert result.comments == ()
+    assert result.error_type == "permission_denied"
+
+
+def test_duplicate_comment_merges_into_operation_record() -> None:
+    records = [
+        {
+            "userid": "approver-1",
+            "remark": "  同意。 ",
+            "date_formatted": "2026-05-28 20:02:57",
+            "task_name": "专项负责人",
+            "operation_type": "EXECUTE_TASK_NORMAL",
+            "operation_result": "AGREE",
+        }
+    ]
+    comments = [
+        AdminComment(
+            comment_id="c1",
+            user_id="approver-1",
+            content="同意",
+            timestamp="2026-05-28 20:02:10",
+        )
+    ]
+
+    merged = merge_approval_remarks(records, comments)
+
+    assert len(merged) == 1
+    assert merged[0].node_name == "专项负责人"
+    assert merged[0].comment_id == "c1"
+    assert merged[0].content == "  同意。 "
+    assert merged[0].sources == ("operation", "comment")
