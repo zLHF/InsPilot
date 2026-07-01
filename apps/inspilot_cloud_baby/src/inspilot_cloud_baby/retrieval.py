@@ -5,9 +5,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import jieba
 from sqlalchemy import String, func, or_, select
 
 from inspilot_cloud_baby.auth import CurrentUser
+from inspilot_cloud_baby.config import settings
 from inspilot_cloud_baby.models import (
     KnowledgeItem,
     KnowledgeSensitivity,
@@ -52,40 +54,131 @@ def retrieve_documents(
 ) -> list[KnowledgeDocument]:
     """Retrieve relevant knowledge documents.
 
-    Strategy (degradation chain):
-      1. If *db* is provided and the embedding service is available → vector search.
-      2. On failure / no results → fall back to keyword search over *documents*.
+    Pipeline:
+      1. (optional) LLM query rewrite for better recall.
+      2. Auto-extract region/insurer/integrator filters from the *original* query.
+      3. Recall candidates from two channels — keyword (jieba) + vector — over a
+         wider pool (fetch_k) than *limit*.
+      4. Fuse the two rankings with Reciprocal Rank Fusion (RRF).
+      5. (optional) Cross-encoder rerank the fused pool, then trim to *limit*.
 
-    *filters* optionally constrains results by metadata (region/insurer/integrator).
-    When None, region/insurer/integrator are auto-extracted from *query* text.
+    Degrades gracefully: a failing channel is skipped; if both DB channels yield
+    nothing, falls back to in-memory keyword search over *documents*.
     """
-    # Auto-extract intent filters from the query text if none were supplied
+    # Filters use the ORIGINAL query so rewrite cannot drop region/insurer entities.
     if filters is None and db is not None:
         filters = _extract_query_filters(query=query, db=db)
 
+    search_query = _maybe_rewrite_query(query)
+
+    if db is None:
+        return _retrieve_by_keyword(query=search_query, user=user, documents=documents, limit=limit)
+
+    # Recall a wider pool for fusion / reranking.
+    fetch_k = max(limit * 4, 20)
+
     keyword_results: list[KnowledgeDocument] = []
-    if db is not None:
-        try:
-            keyword_results = _retrieve_by_db_keyword(query=query, user=user, db=db, limit=limit)
-            if len(keyword_results) >= limit:
-                return keyword_results[:limit]
-        except Exception:
-            logger.warning("DB keyword search failed, continuing with vector search", exc_info=True)
+    try:
+        keyword_results = _retrieve_by_db_keyword(query=search_query, user=user, db=db, limit=fetch_k)
+    except Exception:
+        logger.warning("DB keyword search failed", exc_info=True)
 
-    # --- try vector search first ---
-    if db is not None:
-        try:
-            vector_results = _retrieve_by_vector(
-                query=query, user=user, db=db, limit=limit, filters=filters
-            )
-            if vector_results:
-                return _merge_documents(keyword_results, vector_results, limit)
-        except Exception:
-            logger.warning("Vector search failed, falling back to keyword search", exc_info=True)
+    vector_results: list[KnowledgeDocument] = []
+    try:
+        vector_results = _retrieve_by_vector(
+            query=search_query, user=user, db=db, limit=fetch_k, filters=filters
+        )
+    except Exception:
+        logger.warning("Vector search failed", exc_info=True)
 
-    # --- keyword fallback (original logic) ---
-    fallback_results = _retrieve_by_keyword(query=query, user=user, documents=documents, limit=limit)
-    return _merge_documents(keyword_results, fallback_results, limit)
+    # Fuse the two channels (RRF). Without both, use whichever produced results.
+    if settings.enable_hybrid_search and keyword_results and vector_results:
+        fused = _rrf_fuse([vector_results, keyword_results])
+    else:
+        fused = vector_results or keyword_results
+
+    if not fused:
+        return _retrieve_by_keyword(query=search_query, user=user, documents=documents, limit=limit)
+
+    # Cross-encoder rerank (graceful no-op when unconfigured), then trim.
+    fused = _maybe_rerank(search_query, fused, limit)
+    return fused[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Fusion / rerank / query-rewrite — recall-quality enhancements
+# ---------------------------------------------------------------------------
+
+
+def _rrf_fuse(ranked_lists: list[list[KnowledgeDocument]], *, k: int = 60) -> list[KnowledgeDocument]:
+    """Reciprocal Rank Fusion: combine multiple ranked lists into one.
+
+    A document's fused score is sum over lists of 1 / (k + rank). Documents that
+    rank highly in *either* channel bubble up; agreement across channels compounds.
+    """
+    scores: dict[str, float] = {}
+    doc_by_id: dict[str, KnowledgeDocument] = {}
+    for ranked in ranked_lists:
+        for rank, doc in enumerate(ranked):
+            scores[doc.id] = scores.get(doc.id, 0.0) + 1.0 / (k + rank + 1)
+            doc_by_id.setdefault(doc.id, doc)
+    ordered_ids = sorted(scores, key=lambda doc_id: scores[doc_id], reverse=True)
+    return [doc_by_id[doc_id] for doc_id in ordered_ids]
+
+
+def _maybe_rerank(query: str, docs: list[KnowledgeDocument], limit: int) -> list[KnowledgeDocument]:
+    """Cross-encoder rerank when a rerank service is configured; else return as-is."""
+    if len(docs) <= 1:
+        return docs
+    try:
+        from inspilot_cloud_baby.rerank import get_rerank_service
+
+        svc = get_rerank_service()
+        if not svc.available:
+            return docs
+        texts = [f"{d.title}\n{d.body[:1000]}" for d in docs]
+        ranked = svc.rerank(query, texts, top_n=limit)
+        if not ranked:
+            return docs
+        reordered = [docs[idx] for idx, _ in ranked if 0 <= idx < len(docs)]
+        # Append any docs the reranker omitted, preserving fused order.
+        seen = {id(d) for d in reordered}
+        reordered.extend(d for d in docs if id(d) not in seen)
+        return reordered
+    except Exception:
+        logger.warning("Rerank step failed, keeping fused order", exc_info=True)
+        return docs
+
+
+def _maybe_rewrite_query(query: str) -> str:
+    """LLM query rewrite for recall (off by default — adds an LLM round-trip)."""
+    if not settings.enable_query_rewrite:
+        return query
+    try:
+        from inspilot_cloud_baby.chat_service import get_chat_service
+
+        svc = get_chat_service()
+        if not svc.available:
+            return query
+        out = svc.chat(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是检索查询改写助手。把用户口语化的保险业务问题改写成更适合"
+                        "知识库检索的简洁查询，保留关键实体（地区/保司/集成商/业务术语）。"
+                        "只输出改写后的查询，不要解释、不要引号。"
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+            temperature=0.0,
+        )
+        rewritten = (out or "").strip()
+        return rewritten[:200] if rewritten else query
+    except Exception:
+        logger.warning("Query rewrite failed, using original query", exc_info=True)
+        return query
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +282,7 @@ def _retrieve_by_keyword(
     documents: list[KnowledgeDocument],
     limit: int,
 ) -> list[KnowledgeDocument]:
-    terms = [term for term in query.lower().split() if term]
+    terms = _query_terms(query)
     visible_docs = [
         document
         for document in documents
@@ -208,25 +301,35 @@ def _retrieve_by_keyword(
     return scored[:limit]
 
 
+# Common Chinese function words / interrogatives that add noise to keyword matching.
+_STOPWORDS = frozenset({
+    "的", "了", "吗", "呢", "怎么", "如何", "是", "在", "有", "和", "与", "请问",
+    "一下", "什么", "哪些", "哪个", "可以", "需要", "我们", "这个", "那个", "以及",
+    "怎样", "多少", "为什么", "关于", "想", "要", "吧", "啊", "呀",
+})
+
+
 def _query_terms(query: str) -> list[str]:
-    return [term.strip() for term in query.split() if term.strip()]
+    """Tokenize a query with jieba (Chinese-aware), dropping stopwords/noise.
 
-
-def _merge_documents(
-    first: list[KnowledgeDocument],
-    second: list[KnowledgeDocument],
-    limit: int,
-) -> list[KnowledgeDocument]:
-    merged: list[KnowledgeDocument] = []
+    ``query.split()`` is useless for Chinese (no spaces → whole sentence becomes one
+    token that almost never matches an ilike). jieba search-mode produces overlapping
+    sub-terms (e.g. 见费出单 → 见费/出单/见费出单) for better keyword recall.
+    """
+    terms: list[str] = []
     seen: set[str] = set()
-    for doc in [*first, *second]:
-        if doc.id in seen:
+    for raw in jieba.lcut_for_search(query):
+        term = raw.strip().lower()
+        if not term or term in _STOPWORDS:
             continue
-        seen.add(doc.id)
-        merged.append(doc)
-        if len(merged) >= limit:
-            break
-    return merged
+        # Drop single non-alphanumeric chars (punctuation, lone particles).
+        if len(term) == 1 and not term.isalnum():
+            continue
+        if term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+    return terms
 
 
 def _retrieve_by_db_keyword(

@@ -115,43 +115,81 @@ async function doSend() {
   // Typing indicator
   const typing = addBubble('assistant', '<span class="chat-typing"><span></span><span></span><span></span></span> 正在思考…');
 
+  function renderSources(sources) {
+    if (!sources || !sources.length) return;
+    const srcWrap = document.createElement('div');
+    srcWrap.className = 'chat-sources';
+    const det = document.createElement('details');
+    const sum = document.createElement('summary');
+    sum.textContent = `📎 引用 ${sources.length} 个来源`;
+    det.appendChild(sum);
+    const list = document.createElement('div');
+    list.style.marginTop = '6px';
+    sources.forEach(s => {
+      const a = document.createElement('a');
+      a.href = '/admin/knowledge/' + s.id;
+      a.target = '_blank';
+      a.style.display = 'block';
+      a.style.margin = '2px 0';
+      const tags = [s.region, s.insurer].filter(x=>x).join(' | ');
+      a.textContent = (tags ? '[' + tags + '] ' : '') + s.title;
+      list.appendChild(a);
+    });
+    det.appendChild(list);
+    srcWrap.appendChild(det);
+    typing.appendChild(srcWrap);
+  }
+
   try {
-    const res = await fetch('/chat/query', {
+    const res = await fetch('/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query: q, history: history.slice(0, -1) })
     });
-    const data = await res.json();
+    if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
 
-    // Replace typing with answer
-    typing.innerHTML = renderMd(data.answer);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let answer = '';
+    let sources = null;
+    let started = false;
 
-    // Sources (collapsible)
-    if (data.sources && data.sources.length) {
-      const srcWrap = document.createElement('div');
-      srcWrap.className = 'chat-sources';
-      const det = document.createElement('details');
-      const sum = document.createElement('summary');
-      sum.textContent = `📎 引用 ${data.sources.length} 个来源`;
-      det.appendChild(sum);
-      const list = document.createElement('div');
-      list.style.marginTop = '6px';
-      data.sources.forEach(s => {
-        const a = document.createElement('a');
-        a.href = '/admin/knowledge/' + s.id;
-        a.target = '_blank';
-        a.style.display = 'block';
-        a.style.margin = '2px 0';
-        const tags = [s.region, s.insurer].filter(x=>x).join(' | ');
-        a.textContent = (tags ? '[' + tags + '] ' : '') + s.title;
-        list.appendChild(a);
-      });
-      det.appendChild(list);
-      srcWrap.appendChild(det);
-      typing.appendChild(srcWrap);
+    // Parse one SSE frame ("event: x\ndata: {...}")
+    const handleFrame = (raw) => {
+      let ev = 'message', dataStr = '';
+      for (const ln of raw.split('\n')) {
+        if (ln.startsWith('event:')) ev = ln.slice(6).trim();
+        else if (ln.startsWith('data:')) dataStr += ln.slice(5).trim();
+      }
+      if (!dataStr) return;
+      let data;
+      try { data = JSON.parse(dataStr); } catch (e) { return; }
+      if (ev === 'sources') {
+        sources = data.sources;
+      } else if (ev === 'token') {
+        if (!started) { typing.innerHTML = ''; started = true; }
+        answer += data.t;
+        typing.innerHTML = renderMd(answer);
+        scrollBottom();
+      } else if (ev === 'done') {
+        renderSources(sources);
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
+        handleFrame(buf.slice(0, idx));
+        buf = buf.slice(idx + 2);
+      }
     }
+    if (buf.trim()) handleFrame(buf);
 
-    history.push({ role: 'assistant', content: data.answer });
+    history.push({ role: 'assistant', content: answer });
   } catch (e) {
     typing.innerHTML = '❌ 请求失败：' + e.message;
   } finally {

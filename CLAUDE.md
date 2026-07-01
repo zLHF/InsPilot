@@ -65,26 +65,32 @@ Connection: `postgresql+psycopg://inspilot_cloud_baby:inspilot_cloud_baby@localh
 
 Modular monolith. All external capabilities (DingTalk approval API, object storage, vector search) isolated behind interfaces for post-PoC replacement.
 
-Key modules: `models.py` (SQLAlchemy), `schemas.py` (Pydantic DTOs), `permissions.py` (visibility logic — PUBLIC_SUMMARY with no project is company-readable for shared scheme libraries), `ingest/classifier.py` (material classification), `retrieval.py` (vector search + keyword fallback + query-intent extraction + province→city expansion), `embedding.py` (OpenAI embedding service), `chat_service.py` (LLM chat service for RAG), `prod_db_service.py` (read-only SQL Server connection for NL2SQL), `output_builder.py` (structured JSON), `dingtalk_admin.py` (DingTalk enterprise admin API client — direct Open Platform API, no external CLI), `routers/` (API + admin pages: `chat.py` (dual-source RAG + NL2SQL, fully autonomous), `query.py` (NL2SQL schema + SQL endpoints), `admin.py`, `health.py`, `ingest.py`, `projects.py`).
+Key modules: `models.py` (SQLAlchemy), `schemas.py` (Pydantic DTOs), `permissions.py` (visibility logic — PUBLIC_SUMMARY with no project is company-readable for shared scheme libraries), `ingest/classifier.py` (material classification), `retrieval.py` (vector search + keyword fallback + query-intent extraction + province→city expansion), `embedding.py` (OpenAI embedding service), `rerank.py` (cross-encoder rerank client, graceful degradation), `chat_service.py` (LLM chat service for RAG — `chat()` + `chat_stream()`), `prod_db_service.py` (read-only SQL Server connection for NL2SQL), `output_builder.py` (structured JSON), `dingtalk_admin.py` (DingTalk enterprise admin API client — direct Open Platform API, no external CLI), `routers/` (API + admin pages: `chat.py` (dual-source RAG + NL2SQL, fully autonomous), `query.py` (NL2SQL schema + SQL endpoints), `admin.py`, `health.py`, `ingest.py`, `projects.py`).
 
-**AI behavior is fully externalized**: `docs/rag-prompt.md` is the single source of truth for how the LLM behaves (which channels to use, schema reference, lessons learned). Edit that file to tune behavior — no code changes needed. The code makes ZERO routing decisions; it just opens both data channels (doc KB + prod DB) and lets the LLM synthesize.
+**AI behavior is fully externalized**: `docs/rag-prompt.md` is the single source of truth for how the LLM behaves (which channels to use, schema reference, lessons learned). Edit that file to tune behavior — no code changes needed. The LLM owns *synthesis* (how to use the data); the code makes no semantic routing decisions. The one exception is a cheap **performance gate** (`_needs_prod_db`, toggleable) that skips the prod-DB channel for questions with no real-time signal — it changes *whether a slow round-trip runs*, not how the answer is composed.
 
 ### Vector Search (`embedding.py` + `retrieval.py`)
 
 - **Storage**: pgvector extension on `KnowledgeItem.embedding` column (Vector(1536), nullable)
 - **Embedding service**: `embedding.py` wraps OpenAI `text-embedding-3-small` API with retry (3 attempts) and graceful degradation
-- **Retrieval**: `retrieval.py` uses degradation chain — vector cosine distance search first, falls back to keyword matching on API/DB failure
+- **Retrieval**: `retrieval.py` runs a **hybrid pipeline** — keyword (jieba 中文分词) + vector recall over a wider candidate pool → **RRF fusion** (`_rrf_fuse`) → optional **cross-encoder rerank** → trim to top-k. Each stage degrades gracefully (a failing channel is skipped; both empty → in-memory keyword fallback). Optional LLM query-rewrite (`_maybe_rewrite_query`, off by default — adds a round-trip).
+- **ANN index**: `KnowledgeItem.embedding` has an **HNSW** index (`vector_cosine_ops`), defined in the model and ensured idempotently on startup (`CREATE INDEX IF NOT EXISTS`) — turns vector search from a full-table seq scan into O(log n).
+- **Rerank** (`rerank.py`): calls an OpenAI-compatible `/rerank` endpoint (Jina / Cohere / SiliconFlow); no key configured → graceful no-op (keeps fused order).
 - **Auto-embed**: Knowledge items get embeddings generated at creation time via `_attach_embedding()` in `routers/admin.py`
 - **Migration**: `python -m inspilot_cloud_baby.scripts.migrate_embeddings` backfills embeddings for existing items
-- **Config**: `BUSINESS_ROBOT_OPENAI_API_KEY`, `BUSINESS_ROBOT_ENABLE_VECTOR_SEARCH` (toggle), `BUSINESS_ROBOT_OPENAI_BASE_URL` (proxy support)
+- **Eval harness** (`scripts/eval_retrieval.py`): recall@k / MRR over a labeled or auto-generated query set — the "ruler" for A/B-testing retrieval changes (rerank on/off, hybrid on/off, etc.)
+- **Config**: `BUSINESS_ROBOT_OPENAI_API_KEY`, `BUSINESS_ROBOT_ENABLE_VECTOR_SEARCH` (toggle), `BUSINESS_ROBOT_OPENAI_BASE_URL` (proxy); `BUSINESS_ROBOT_RERANK_API_KEY/BASE_URL/MODEL` + `BUSINESS_ROBOT_ENABLE_RERANK`; `BUSINESS_ROBOT_ENABLE_HYBRID_SEARCH`, `BUSINESS_ROBOT_ENABLE_QUERY_REWRITE`
 
 ### Conversational RAG Search (`chat.py` + `chat_service.py`)
 
-- **Search console** at `/admin/search` — full chat interface (bubbles, markdown rendering via marked.js, multi-turn history, quick-question chips)
-- **RAG flow**: user question → `retrieve_documents()` (vector + region filter) → retrieved plans fed as context to LLM (6K chars/plan) → LLM generates structured answer
-- **Chat service**: `chat_service.py` wraps OpenAI-compatible `chat.completions.create()` (OpenRouter / DeepSeek / OpenAI), 3-retry, lazy singleton with hot-reload
-- **Smart routing**: `_should_route_to_prod_db()` detects order numbers / live-data keywords → redirects to NL2SQL; otherwise doc RAG
-- **Config**: `BUSINESS_ROBOT_CHAT_API_KEY`, `BUSINESS_ROBOT_CHAT_BASE_URL`, `BUSINESS_ROBOT_CHAT_MODEL`
+- **Search console** at `/admin/search` — full chat interface (bubbles, markdown rendering via marked.js, multi-turn history, quick-question chips), consumes the streaming endpoint
+- **Streaming**: `POST /chat/stream` (SSE) pushes `sources` first, then answer token-by-token, then `done` — first byte in ~1-2s instead of waiting for the full answer. `POST /chat/query` kept as the non-streaming equivalent.
+- **Parallel channels**: `_gather_channels()` fetches doc KB ‖ prod DB concurrently (ThreadPoolExecutor) — total latency ≈ max(both) not sum.
+- **RAG flow**: user question → `retrieve_documents()` (hybrid + region filter) → retrieved plans fed as context to LLM (6K chars/plan) → LLM generates structured answer
+- **Chat service**: `chat_service.py` wraps OpenAI-compatible `chat.completions.create()` (OpenRouter / DeepSeek / OpenAI), `chat()` (3-retry) + `chat_stream()` (streaming, no retry), lazy singleton with hot-reload
+- **Prod-DB gate** (`_needs_prod_db`): cheap heuristic pre-filter — only generate+run SQL when the question hits real-time signals (order/rate/number…), so pure-KB questions skip the SQL round-trip. This is a *performance* pre-filter, NOT semantic routing (the LLM still owns how to use the data). Toggle with `BUSINESS_ROBOT_ENABLE_PROD_DB_GATE` (default on; off = both channels always run).
+- **Query log** (`QueryLog` table): every turn is logged (query, recalled doc_ids, zero_result flag, latency). Zero-result rows surface the keywords/黑话 users search but you can't answer — the data-driven way to find what to improve.
+- **Config**: `BUSINESS_ROBOT_CHAT_API_KEY`, `BUSINESS_ROBOT_CHAT_BASE_URL`, `BUSINESS_ROBOT_CHAT_MODEL`, `BUSINESS_ROBOT_ENABLE_PROD_DB_GATE`
 - **Degraded mode**: if no chat model configured, returns title list instead of LLM answer
 
 ### CS3.0 Scheme Import (`scripts/import_cs3_plans.py`)

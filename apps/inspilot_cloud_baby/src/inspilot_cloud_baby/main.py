@@ -22,6 +22,18 @@ def _init_db() -> None:
         with engine.begin() as conn:
             conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
         Base.metadata.create_all(bind=engine)
+        # create_all only builds the HNSW index on a *fresh* knowledge_items table;
+        # for an existing table it is a no-op. Ensure it explicitly (idempotent) so
+        # existing deployments also get fast ANN search instead of a seq scan.
+        try:
+            with engine.begin() as conn:
+                conn.execute(sa.text(
+                    "CREATE INDEX IF NOT EXISTS ix_knowledge_items_embedding_hnsw "
+                    "ON knowledge_items USING hnsw (embedding vector_cosine_ops) "
+                    "WITH (m = 16, ef_construction = 64)"
+                ))
+        except Exception:
+            logger.warning("Could not ensure HNSW index on knowledge_items.embedding", exc_info=True)
         logger.info("Database tables verified / created")
     except Exception:
         logger.warning("Could not create database tables", exc_info=True)

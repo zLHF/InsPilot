@@ -57,9 +57,13 @@ def sample_docs() -> list[KnowledgeDocument]:
 
 
 class TestKeywordRetrieval:
-    def test_query_terms_preserve_chinese_phrases(self):
-        assert _query_terms("浙江华重融资担保") == ["浙江华重融资担保"]
-        assert _query_terms("西宁市 浙江华重融资担保") == ["西宁市", "浙江华重融资担保"]
+    def test_query_terms_segments_chinese_into_matchable_words(self):
+        # jieba segments the phrase into independently-matchable words (old behavior
+        # kept the whole sentence as one term, which an ilike almost never matched).
+        terms = _query_terms("浙江华重融资担保")
+        assert "浙江" in terms and "融资" in terms and "担保" in terms
+        # Region word from a space-separated multi-entity query is still recovered.
+        assert "西宁市" in _query_terms("西宁市 浙江华重融资担保")
 
     def test_query_filter_extraction_ignores_polluted_non_region_values(self):
         mock_db = MagicMock()

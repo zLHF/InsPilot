@@ -129,6 +129,17 @@ def _format_operation_record(rec: dict) -> str:
     return " / ".join(parts) if parts else "未知"
 
 
+def _format_file_size(n: int) -> str:
+    """Human-readable file size (B / KB / MB)."""
+    if not n or n <= 0:
+        return ""
+    if n < 1024:
+        return f"{n}B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f}KB"
+    return f"{n / 1024 / 1024:.1f}MB"
+
+
 def _build_dingtalk_knowledge_body(workflow: WorkflowDoc) -> str:
     body_parts = [f"# {workflow.title or workflow.process_instance_id}"]
     if workflow.status:
@@ -158,7 +169,16 @@ def _build_dingtalk_knowledge_body(workflow: WorkflowDoc) -> str:
     if workflow.attachments:
         body_parts.append("\n## 附件")
         for att in workflow.attachments:
-            body_parts.append(f"- {att.get('file_name', att.get('field_name', '附件'))}")
+            fname = att.get("file_name") or att.get("field_name") or "附件"
+            ftype = att.get("file_type", "")
+            fsize = att.get("file_size", 0)
+            tags = []
+            if ftype:
+                tags.append(ftype)
+            if fsize:
+                tags.append(_format_file_size(fsize))
+            tag_str = f"（{'，'.join(tags)}）" if tags else ""
+            body_parts.append(f"- {fname}{tag_str}")
 
     return "\n".join(body_parts)
 

@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from inspilot_cloud_baby.auth import CurrentUser
 from inspilot_cloud_baby.chat_service import get_chat_service
+from inspilot_cloud_baby.config import settings
 from inspilot_cloud_baby.db import SessionLocal
+from inspilot_cloud_baby.models import QueryLog
 from inspilot_cloud_baby.retrieval import retrieve_documents
 
 logger = logging.getLogger(__name__)
@@ -151,22 +157,64 @@ def _extract_sql(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Main endpoint — fetch both channels, let the LLM synthesize
+# Prod-DB gate — cheap heuristic pre-filter (NOT semantic routing)
+# ---------------------------------------------------------------------------
+# 这不是"语义路由"：LLM 仍对如何使用拿到的数据有完全自主权。这里只做一层廉价
+# 预过滤——当问题明显与实时数据无关时（纯方案知识库问题），跳过昂贵的 SQL 生成
+# LLM 调用 + SQL Server 往返，避免白等。可用 settings.enable_prod_db_gate 关闭，
+# 恢复"双通道无脑全跑"的原始行为。
+# 注意：避免方案知识库里的高频术语（如"出单"——见费出单/独立出单/出单模式），
+# 否则纯知识库问题会被误判为需要实时数据。只保留指向实时查询的明确信号。
+_PROD_DB_SIGNALS = (
+    "订单", "保单号", "费率", "保费", "缴费", "支付", "金额", "余额",
+    "实时", "最新", "当前", "目前", "进度", "今天", "今日", "本月",
+    "多少笔", "多少单", "多少钱", "统计", "排名", "排行",
+)
+_ORDER_NUM_RE = re.compile(r"\d{8,}")
+
+
+def _needs_prod_db(query: str) -> bool:
+    """是否触发生产库通道。门控关闭时恒为 True（恢复双通道全跑）。"""
+    if not settings.enable_prod_db_gate:
+        return True
+    return bool(_ORDER_NUM_RE.search(query)) or any(s in query for s in _PROD_DB_SIGNALS)
+
+
+# ---------------------------------------------------------------------------
+# Channel orchestration + synthesis helpers (shared by /query and /stream)
 # ---------------------------------------------------------------------------
 
-@router.post("/query", response_model=ChatQueryResponse)
-def query_chat(request: ChatQueryRequest) -> ChatQueryResponse:
-    # Build optional manual filters
-    manual_filters: dict | None = None
-    manual = {"region": request.region.strip(), "insurer": request.insurer.strip(), "integrator": request.integrator.strip()}
+
+def _gather_channels(query: str, manual_filters: dict | None):
+    """并行拉取 doc KB 与（按需触发的）prod DB 两个数据通道。
+
+    返回 (doc_results, doc_context, prod_sql, prod_result, prod_rows)。
+    两通道互不依赖，并行后总延迟 ≈ max(两者) 而非 sum。
+    """
+    run_db = _needs_prod_db(query)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        doc_future = pool.submit(_fetch_doc_kb, query, manual_filters)
+        prod_future = pool.submit(_fetch_prod_db, query) if run_db else None
+        doc_results, doc_context = doc_future.result()
+        prod_sql, prod_result, prod_rows = (
+            prod_future.result() if prod_future else ("", "", 0)
+        )
+    return doc_results, doc_context, prod_sql, prod_result, prod_rows
+
+
+def _parse_manual_filters(request: ChatQueryRequest) -> dict | None:
+    manual = {
+        "region": request.region.strip(),
+        "insurer": request.insurer.strip(),
+        "integrator": request.integrator.strip(),
+    }
     if any(manual.values()):
-        manual_filters = {k: v for k, v in manual.items() if v}
+        return {k: v for k, v in manual.items() if v}
+    return None
 
-    # === Fetch BOTH channels — no routing, no decisions ===
-    doc_results, doc_context = _fetch_doc_kb(request.query, manual_filters)
-    prod_sql, prod_result, prod_rows = _fetch_prod_db(request.query)
 
-    sources = [
+def _build_sources(doc_results: list) -> list[SourceItem]:
+    return [
         SourceItem(
             id=doc.id, title=doc.title, source_type=doc.source_type,
             region=doc.metadata.get("region", ""), insurer=doc.metadata.get("insurer", ""),
@@ -175,43 +223,172 @@ def query_chat(request: ChatQueryRequest) -> ChatQueryResponse:
         for doc in doc_results
     ]
 
-    total_count = len(doc_results) + prod_rows
 
-    if not doc_results and prod_rows == 0:
-        return ChatQueryResponse(
-            answer=f"未找到与「{request.query}」相关的信息（方案知识库和生产数据库均无匹配）。",
-            sources=[], count=0, llm_used=False,
-        )
+def _build_synthesis_messages(query, history, doc_results, doc_context, prod_result, prod_rows) -> list[dict]:
+    """构建喂给综合 LLM 的 messages（master prompt + 两通道数据 + 多轮历史）。"""
+    master = _load_master_prompt()
+    sections = []
+    if doc_context:
+        sections.append(f"## 方案知识库（{len(doc_results)} 条相关方案）\n\n{doc_context}")
+    if prod_result:
+        sections.append(f"## 生产数据库（实时数据，{prod_rows} 行）\n\n```json\n{prod_result}\n```")
+    combined = "\n\n---\n\n".join(sections)
 
-    # === Synthesize: feed master prompt + both channel results to LLM ===
-    chat_svc = get_chat_service()
-    if chat_svc.available:
-        master = _load_master_prompt()
-        sections = []
-        if doc_context:
-            sections.append(f"## 方案知识库（{len(doc_results)} 条相关方案）\n\n{doc_context}")
-        if prod_result:
-            sections.append(f"## 生产数据库（实时数据，{prod_rows} 行）\n\n```json\n{prod_result}\n```")
-        combined = "\n\n---\n\n".join(sections)
+    messages: list[dict] = [
+        {"role": "system", "content": master + "\n\n## 本轮获取到的数据\n\n" + combined},
+    ]
+    for msg in history[-6:]:
+        if msg.role in ("user", "assistant"):
+            messages.append({"role": msg.role, "content": msg.content})
+    messages.append({"role": "user", "content": query})
+    return messages
 
-        messages: list[dict] = [
-            {"role": "system", "content": master + "\n\n## 本轮获取到的数据\n\n" + combined},
-        ]
-        for msg in request.history[-6:]:
-            if msg.role in ("user", "assistant"):
-                messages.append({"role": msg.role, "content": msg.content})
-        messages.append({"role": "user", "content": request.query})
 
-        answer = chat_svc.chat(messages)
-        if answer:
-            sql_block = f"\n\n<details><summary>📄 生产库 SQL（{prod_rows} 行）</summary>\n\n```sql\n{prod_sql}\n```\n\n</details>" if prod_sql else ""
-            return ChatQueryResponse(answer=answer + sql_block, sources=sources, count=total_count, llm_used=True)
-        logger.warning("LLM call failed, returning degraded answer")
+def _sql_details_block(prod_sql: str, prod_rows: int) -> str:
+    if not prod_sql:
+        return ""
+    return (
+        f"\n\n<details><summary>📄 生产库 SQL（{prod_rows} 行）</summary>\n\n"
+        f"```sql\n{prod_sql}\n```\n\n</details>"
+    )
 
-    # Degraded (no LLM)
+
+def _degraded_answer(doc_results, sources, prod_result, prod_rows) -> str:
     parts = []
     if doc_results:
         parts.append("**方案知识库：**\n" + "\n".join(f"- {s.title}" for s in sources[:8]))
     if prod_result:
         parts.append(f"**生产数据库（{prod_rows} 行）：**\n```json\n{prod_result[:1000]}\n```")
-    return ChatQueryResponse(answer="\n\n".join(parts) or "（无数据）", sources=sources, count=total_count, llm_used=False)
+    return "\n\n".join(parts) or "（无数据）"
+
+
+def _log_query(query, user_id, doc_results, prod_rows, llm_used, latency_ms) -> None:
+    """Persist one retrieval turn to query_logs (best-effort; never breaks the request).
+
+    Zero-result rows are the gold mine: queries users searched but we couldn't answer.
+    """
+    try:
+        db = SessionLocal()
+        try:
+            db.add(QueryLog(
+                query=query[:2000],
+                user_id=user_id,
+                doc_ids=[d.id for d in doc_results],
+                doc_count=len(doc_results),
+                prod_rows=prod_rows,
+                llm_used=llm_used,
+                zero_result=(not doc_results and prod_rows == 0),
+                latency_ms=latency_ms,
+            ))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        logger.debug("Failed to write query log", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.post("/query", response_model=ChatQueryResponse)
+def query_chat(request: ChatQueryRequest) -> ChatQueryResponse:
+    """Non-streaming endpoint (kept for compatibility). Streaming lives at /stream."""
+    start = time.monotonic()
+    manual_filters = _parse_manual_filters(request)
+    doc_results, doc_context, prod_sql, prod_result, prod_rows = _gather_channels(
+        request.query, manual_filters
+    )
+    sources = _build_sources(doc_results)
+    total_count = len(doc_results) + prod_rows
+
+    def _finish(answer: str, llm_used: bool) -> ChatQueryResponse:
+        _log_query(request.query, "alpha", doc_results, prod_rows, llm_used,
+                   int((time.monotonic() - start) * 1000))
+        return ChatQueryResponse(answer=answer, sources=sources, count=total_count, llm_used=llm_used)
+
+    if not doc_results and prod_rows == 0:
+        _log_query(request.query, "alpha", doc_results, prod_rows, False,
+                   int((time.monotonic() - start) * 1000))
+        return ChatQueryResponse(
+            answer=f"未找到与「{request.query}」相关的信息（方案知识库和生产数据库均无匹配）。",
+            sources=[], count=0, llm_used=False,
+        )
+
+    chat_svc = get_chat_service()
+    if chat_svc.available:
+        messages = _build_synthesis_messages(
+            request.query, request.history, doc_results, doc_context, prod_result, prod_rows
+        )
+        answer = chat_svc.chat(messages)
+        if answer:
+            return _finish(answer + _sql_details_block(prod_sql, prod_rows), True)
+        logger.warning("LLM call failed, returning degraded answer")
+
+    return _finish(_degraded_answer(doc_results, sources, prod_result, prod_rows), False)
+
+
+def _sse(event: str, data: dict) -> str:
+    """Format a Server-Sent Event. JSON-encode data so embedded newlines are safe."""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@router.post("/stream")
+def stream_chat(request: ChatQueryRequest) -> StreamingResponse:
+    """Streaming version of /query. Pushes sources first, then answer token-by-token.
+
+    SSE events:
+      sources {sources:[...], count:N}   — emitted once, before the answer
+      token   {t:"..."}                  — incremental answer deltas
+      done    {count:N, llm_used:bool}   — terminal
+    """
+
+    def gen():
+        start = time.monotonic()
+        manual_filters = _parse_manual_filters(request)
+        doc_results, doc_context, prod_sql, prod_result, prod_rows = _gather_channels(
+            request.query, manual_filters
+        )
+        sources = _build_sources(doc_results)
+        total_count = len(doc_results) + prod_rows
+        llm_used = False
+
+        try:
+            yield _sse("sources", {"sources": [s.model_dump() for s in sources], "count": total_count})
+
+            if not doc_results and prod_rows == 0:
+                yield _sse("token", {"t": f"未找到与「{request.query}」相关的信息（方案知识库和生产数据库均无匹配）。"})
+                yield _sse("done", {"count": 0, "llm_used": False})
+                return
+
+            chat_svc = get_chat_service()
+            if chat_svc.available:
+                messages = _build_synthesis_messages(
+                    request.query, request.history, doc_results, doc_context, prod_result, prod_rows
+                )
+                got_any = False
+                for delta in chat_svc.chat_stream(messages):
+                    got_any = True
+                    yield _sse("token", {"t": delta})
+                if got_any:
+                    llm_used = True
+                    block = _sql_details_block(prod_sql, prod_rows)
+                    if block:
+                        yield _sse("token", {"t": block})
+                    yield _sse("done", {"count": total_count, "llm_used": True})
+                    return
+                logger.warning("LLM stream produced nothing, falling back to degraded answer")
+
+            # Degraded (no LLM configured / stream failed before any token)
+            yield _sse("token", {"t": _degraded_answer(doc_results, sources, prod_result, prod_rows)})
+            yield _sse("done", {"count": total_count, "llm_used": False})
+        finally:
+            _log_query(request.query, "alpha", doc_results, prod_rows, llm_used,
+                       int((time.monotonic() - start) * 1000))
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )

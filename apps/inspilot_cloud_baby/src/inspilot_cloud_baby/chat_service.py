@@ -7,6 +7,7 @@ OpenAI-compatible endpoint via base_url).
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 
 from openai import OpenAI, OpenAIError
 
@@ -77,6 +78,33 @@ class ChatService:
                 logger.error("Chat unexpected error (attempt %d/3)", attempt + 1, exc_info=True)
         logger.error("Chat failed after 3 attempts")
         return None
+
+    def chat_stream(self, messages: list[dict], *, temperature: float = 0.3) -> Iterator[str]:
+        """Yield assistant reply text incrementally (token deltas).
+
+        Unlike `chat()`, streaming cannot be retried mid-flight (partial tokens
+        already emitted), so on error it simply stops yielding. Callers should
+        treat an empty stream as failure and fall back accordingly.
+        """
+        if not self.available:
+            return
+        try:
+            stream = self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                temperature=temperature,
+                stream=True,
+            )
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+        except OpenAIError as exc:
+            logger.warning("Chat stream API error: %s", exc)
+        except Exception:
+            logger.error("Chat stream unexpected error", exc_info=True)
 
 
 _service: ChatService | None = None
