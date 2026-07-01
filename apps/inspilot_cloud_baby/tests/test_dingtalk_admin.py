@@ -117,6 +117,62 @@ def test_parse_detail_accepts_dingtalk_snake_case_form_fields() -> None:
     assert "空字段" not in detail.form_data
 
 
+def test_parse_detail_null_attachment_value_yields_no_placeholder() -> None:
+    """Regression: when an attachment field's value is the literal string "null"
+    (DingTalk returns this when no file was uploaded / for client-side local
+    uploads), parse_detail must NOT fabricate a placeholder attachment.
+
+    Before the fix, a phantom "附件" appeared in the UI that couldn't be opened.
+    """
+    client = DingTalkAdminClient("key", "secret")
+    raw = {
+        "title": "无附件工单",
+        "status": "RUNNING",
+        "business_id": "202603170904000148843",
+        "originator_userid": "u1",
+        "form_component_values": [
+            {
+                "component_type": "DDAttachment",
+                "id": "DDAttachment_1ZG45MOQV7UO0",
+                "name": "附件",
+                "value": "null",
+            },
+        ],
+    }
+    detail = client.parse_detail(raw)
+    assert detail.attachments == []
+
+
+def test_parse_detail_real_attachment_value_is_parsed() -> None:
+    """A populated attachment field should yield one AdminAttachment per file,
+    preserving fileId / fileName / fileSize / fileType."""
+    client = DingTalkAdminClient("key", "secret")
+    raw = {
+        "title": "有附件工单",
+        "status": "COMPLETED",
+        "business_id": "BIZ-2",
+        "originator_userid": "u1",
+        "form_component_values": [
+            {
+                "component_type": "DDAttachment",
+                "name": "更新包上传",
+                "value": (
+                    '[{"spaceId":"1764121318","fileName":"app.exe",'
+                    '"fileSize":316416,"fileType":"exe","fileId":"225597627427"}]'
+                ),
+            },
+        ],
+    }
+    detail = client.parse_detail(raw)
+    assert len(detail.attachments) == 1
+    att = detail.attachments[0]
+    assert att.file_id == "225597627427"
+    assert att.file_name == "app.exe"
+    assert att.file_size == 316416
+    assert att.file_type == "exe"
+    assert att.space_id == "1764121318"
+
+
 def test_test_connection_ok_when_token_refresh_succeeds() -> None:
     client = DingTalkAdminClient("key", "secret")
 

@@ -23,6 +23,7 @@ class AdminAttachment:
     file_id: str = ""
     file_name: str = ""
     file_size: int = 0
+    file_type: str = ""  # e.g. "exe", "rar", "sql"
     download_url: str = ""
     space_id: str = ""
 
@@ -237,10 +238,23 @@ class DingTalkAdminClient:
     def _parse_form_attachments(
         self, name: str, ctype: str, value: str
     ) -> list[AdminAttachment]:
-        """Parse attachment value JSON from DDAttachment/Picture components."""
+        """Parse attachment value JSON from DDAttachment/Picture components.
+
+        DingTalk returns one of:
+          - a JSON array: [{"spaceId":..., "fileId":..., "fileName":..., ...}]
+          - the literal string "null" when the field was left empty, or the
+            attachment was a client-side local upload that the detail API
+            cannot surface. In the latter case the real file list is
+            unreachable without the client, so we return [] (no placeholder).
+        """
+        # Treat empty / "null" / "[]" as "no files" — don't fabricate a placeholder.
+        stripped = (value or "").strip()
+        if not stripped or stripped.lower() == "null" or stripped == "[]":
+            return []
+
         results: list[AdminAttachment] = []
         try:
-            parsed = json.loads(value) if value else []
+            parsed = json.loads(stripped)
         except (json.JSONDecodeError, TypeError):
             parsed = []
 
@@ -253,19 +267,14 @@ class DingTalkAdminClient:
             results.append(AdminAttachment(
                 field_name=name,
                 component_type=ctype,
-                file_id=item.get("fileId", ""),
+                file_id=str(item.get("fileId", "") or item.get("file_id", "")),
                 file_name=item.get("fileName", item.get("originalName", name)),
-                file_size=item.get("fileSize", 0),
-                download_url=item.get("downloadUrl", ""),
-                space_id=item.get("spaceId", ""),
+                file_size=int(item.get("fileSize", 0) or 0),
+                file_type=item.get("fileType", "") or item.get("file_type", ""),
+                download_url=item.get("downloadUrl", "") or item.get("download_url", ""),
+                space_id=str(item.get("spaceId", "") or item.get("space_id", "")),
             ))
 
-        if not results:
-            results.append(AdminAttachment(
-                field_name=name,
-                component_type=ctype,
-                file_name=name,
-            ))
         return results
 
     def parse_detail(self, raw: dict) -> AdminWorkflowDetail:
@@ -422,8 +431,10 @@ class DingTalkAdminClient:
                     "field_name": a.field_name,
                     "file_name": a.file_name,
                     "file_id": a.file_id,
-                    "download_url": a.download_url,
                     "file_size": a.file_size,
+                    "file_type": a.file_type,
+                    "download_url": a.download_url,
+                    "space_id": a.space_id,
                     "component_type": a.component_type,
                 }
                 for a in detail.attachments
