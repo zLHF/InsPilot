@@ -33,7 +33,7 @@
 - 新建：`apps/inspilot_cloud_baby/tests/test_audit.py`
 - 新建：`apps/inspilot_cloud_baby/tests/test_audit_integration.py`
 
-- [ ] **步骤 1：为审计构造和秘密安全的配置元数据编写失败测试**
+- [x] **步骤 1：为审计构造和秘密安全的配置元数据编写失败测试**
 
 ```python
 from inspilot_cloud_baby.audit import ADMIN_WEB_ACTOR, config_change_metadata, write_audit
@@ -76,13 +76,13 @@ def test_write_audit_adds_without_committing(mocker) -> None:
     session.commit.assert_not_called()
 ```
 
-- [ ] **步骤 2：运行单元测试并确认失败**
+- [x] **步骤 2：运行单元测试并确认失败**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_audit.py -v`
 
 预期：失败，因为 `inspilot_cloud_baby.audit` 尚不存在。
 
-- [ ] **步骤 3：实现审计服务**
+- [x] **步骤 3：实现审计服务**
 
 ```python
 from __future__ import annotations
@@ -130,7 +130,7 @@ def write_audit(
     return row
 ```
 
-- [ ] **步骤 4：增加真实 PostgreSQL 回滚测试**
+- [x] **步骤 4：增加真实 PostgreSQL 回滚测试**
 
 ```python
 import uuid
@@ -178,13 +178,13 @@ def test_audit_flush_failure_rolls_back_business_change() -> None:
         assert verify.scalar(select(Project).where(Project.id == project_id)) is None
 ```
 
-- [ ] **步骤 5：运行审计测试**
+- [x] **步骤 5：运行审计测试**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_audit.py tests/test_audit_integration.py -v`
 
 预期：通过。如果 PostgreSQL 不可用，修复本地 Docker 依赖，不得用 mock 替代该测试。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby/src/inspilot_cloud_baby/audit.py apps/inspilot_cloud_baby/tests/test_audit.py apps/inspilot_cloud_baby/tests/test_audit_integration.py
@@ -197,7 +197,7 @@ git commit -m "feat: add transaction-scoped audit service"
 - 修改：`apps/inspilot_cloud_baby/src/inspilot_cloud_baby/routers/admin.py`
 - 修改：`apps/inspilot_cloud_baby/tests/test_admin_pages.py`
 
-- [ ] **步骤 1：编写失败的路由测试，捕获同一会话中新增的 `AuditLog` 对象**
+- [x] **步骤 1：编写失败的路由测试，捕获同一会话中新增的 `AuditLog` 对象**
 
 增加可复用的伪会话，同时记录业务行和审计行，并断言以下动作：
 
@@ -213,13 +213,13 @@ assert_audit(response, added, "dingtalk.batch_import", "knowledge_batch")
 
 测试助手必须验证 `actor_user_id == "admin:web"`；可见性/状态测试必须断言 `metadata_json` 包含 `before`、`after` 摘要且不含正文。
 
-- [ ] **步骤 2：运行聚焦的后台测试并确认失败**
+- [x] **步骤 2：运行聚焦的后台测试并确认失败**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_admin_pages.py -k audit -v`
 
 预期：失败，因为路由尚未新增审计行。
 
-- [ ] **步骤 3：在每个现有 `session.commit()` 前增加审计写入**
+- [x] **步骤 3：在每个现有 `session.commit()` 前增加审计写入**
 
 所有覆盖操作均使用以下模式：
 
@@ -240,7 +240,7 @@ session.commit()
 
 更新前先保存枚举/ID 旧值。删除时，在 `session.delete(item)` 前写审计，仅包含标题、来源类型、项目 ID、敏感级别和状态。批量导入对所有成功构建的条目使用一个事务，写一条包含 `requested_count`、`success_count`、`failure_count` 的汇总审计并只提交一次；`_db_query` 返回 `None` 时不得增加成功数。
 
-- [ ] **步骤 4：保存 Beta 验证器所需的钉钉来源信息**
+- [x] **步骤 4：保存 Beta 验证器所需的钉钉来源信息**
 
 单条和批量导入都必须包含：
 
@@ -254,13 +254,13 @@ metadata_json={
 }
 ```
 
-- [ ] **步骤 5：运行路由和集成测试**
+- [x] **步骤 5：运行路由和集成测试**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_admin_pages.py tests/test_audit_integration.py -v`
 
 预期：通过。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby/src/inspilot_cloud_baby/routers/admin.py apps/inspilot_cloud_baby/tests/test_admin_pages.py
@@ -274,7 +274,7 @@ git commit -m "feat: audit admin knowledge and import operations"
 - 修改：`apps/inspilot_cloud_baby/tests/test_admin_pages.py`
 - 修改：`apps/inspilot_cloud_baby/tests/test_audit_integration.py`
 
-- [ ] **步骤 1：为独立动作码和秘密脱敏编写失败测试**
+- [x] **步骤 1：为独立动作码和秘密脱敏编写失败测试**
 
 ```python
 def test_settings_save_writes_redacted_config_update_audit(audit_client, added):
@@ -295,13 +295,13 @@ def test_dingtalk_pre_save_test_writes_config_test_audit(audit_client, added):
 
 扩展 PostgreSQL 集成测试：从 `app_settings` 读取已配置秘密，扫描序列化审计元数据，并断言任何非空秘密值都未出现。
 
-- [ ] **步骤 2：运行聚焦测试并确认失败**
+- [x] **步骤 2：运行聚焦测试并确认失败**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_admin_pages.py tests/test_audit_integration.py -k 'config or secret' -v`
 
 预期：失败，因为配置审计尚不存在。
 
-- [ ] **步骤 3：实现配置更新和测试审计助手**
+- [x] **步骤 3：实现配置更新和测试审计助手**
 
 ```python
 def _record_config_test(*, service: str, ok: bool, error_type: str = "") -> None:
@@ -319,13 +319,13 @@ def _record_config_test(*, service: str, ok: bool, error_type: str = "") -> None
 
 Embedding、对话、钉钉和生产库测试端点的每条返回路径都调用该助手。在 `settings_save` 中构造提交值映射，调用 `config_change_metadata`，在现有保存事务中写入 `config.update`，然后只提交一次。
 
-- [ ] **步骤 4：运行后台和审计测试**
+- [x] **步骤 4：运行后台和审计测试**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_admin_pages.py tests/test_audit.py tests/test_audit_integration.py -v`
 
 预期：通过。
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby/src/inspilot_cloud_baby/routers/admin.py apps/inspilot_cloud_baby/tests/test_admin_pages.py apps/inspilot_cloud_baby/tests/test_audit_integration.py
@@ -339,7 +339,7 @@ git commit -m "feat: audit configuration changes and tests"
 - 修改：`apps/inspilot_cloud_baby/src/inspilot_cloud_baby/retrieval.py`
 - 修改：`apps/inspilot_cloud_baby/tests/test_retrieval.py`
 
-- [ ] **步骤 1：编写失败的证据与排序测试**
+- [x] **步骤 1：编写失败的证据与排序测试**
 
 ```python
 def test_keyword_results_do_not_short_circuit_vector_recall(
@@ -372,13 +372,13 @@ def test_unauthorized_document_never_appears_in_evidence(company_user, mock_db):
 
 同时覆盖标题/元数据/正文的字段优先级、双通道平分处理、仅向量距离排序、向量不可用状态、去重和稳定的文档 ID 平分处理。
 
-- [ ] **步骤 2：运行检索测试并确认失败**
+- [x] **步骤 2：运行检索测试并确认失败**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_retrieval.py -v`
 
 预期：失败，因为可解释检索和融合类型尚不存在。
 
-- [ ] **步骤 3：实现聚焦的证据类型和融合逻辑**
+- [x] **步骤 3：实现聚焦的证据类型和融合逻辑**
 
 ```python
 @dataclass(frozen=True)
@@ -415,7 +415,7 @@ class ExplainedDocument:
 )
 ```
 
-- [ ] **步骤 4：重构召回函数以返回可排序候选**
+- [x] **步骤 4：重构召回函数以返回可排序候选**
 
 `_retrieve_by_db_keyword` 必须检查标题、正文及字符串化的标量元数据值，统计命中的不同查询词，并返回命中字段和关键词排名。`_retrieve_by_vector` 必须将余弦距离作为带标签列查询，使每条获准结果保留数值距离和排名。两个函数都必须在构造证据前执行 `can_read_knowledge`。
 
@@ -459,13 +459,13 @@ def retrieve_documents(
 
 保留现有无数据库的内存降级路径，并转换为关键词证据。向量 API/数据库失败不得丢弃有效关键词候选。
 
-- [ ] **步骤 5：运行检索测试**
+- [x] **步骤 5：运行检索测试**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_retrieval.py -v`
 
 预期：通过。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby/src/inspilot_cloud_baby/retrieval_evidence.py apps/inspilot_cloud_baby/src/inspilot_cloud_baby/retrieval.py apps/inspilot_cloud_baby/tests/test_retrieval.py
@@ -479,7 +479,7 @@ git commit -m "feat: explain hybrid retrieval ranking"
 - 修改：`apps/inspilot_cloud_baby/src/inspilot_cloud_baby/templates/search.html`
 - 新建：`apps/inspilot_cloud_baby/tests/test_chat_search.py`
 
-- [ ] **步骤 1：编写失败的响应契约测试**
+- [x] **步骤 1：编写失败的响应契约测试**
 
 ```python
 def test_chat_source_exposes_safe_retrieval_evidence(monkeypatch) -> None:
@@ -495,13 +495,13 @@ def test_chat_source_exposes_safe_retrieval_evidence(monkeypatch) -> None:
 
 测试还必须断言：在检索边界下方模拟的未授权结果会在序列化前被拒绝；更优做法是让检索 fixture 根本无法产生该结果。
 
-- [ ] **步骤 2：运行契约测试并确认失败**
+- [x] **步骤 2：运行契约测试并确认失败**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_chat_search.py -v`
 
 预期：失败，因为 `SourceItem` 缺少证据字段。
 
-- [ ] **步骤 3：扩展面向后台的来源契约**
+- [x] **步骤 3：扩展面向后台的来源契约**
 
 ```python
 class SourceItem(BaseModel):
@@ -521,17 +521,17 @@ class SourceItem(BaseModel):
 
 让 `_fetch_doc_kb` 调用 `retrieve_documents_explained`；Prompt 上下文只使用 `.document`，来源序列化使用 `.evidence`。HTTP 响应不得暴露向量距离。
 
-- [ ] **步骤 4：在 `search.html` 中渲染紧凑诊断行**
+- [x] **步骤 4：在 `search.html` 中渲染紧凑诊断行**
 
 为每个来源追加经过转义的文本节点，展示最终排名、渠道标签、命中字段、关键词排名和向量排名。标题链接保持主元素，沿用现有 12px 来源字号。API 返回值不得通过 `innerHTML` 写入。
 
-- [ ] **步骤 5：运行对话和界面契约测试**
+- [x] **步骤 5：运行对话和界面契约测试**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_chat_search.py tests/test_api_routes.py -v`
 
 预期：通过。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby/src/inspilot_cloud_baby/routers/chat.py apps/inspilot_cloud_baby/src/inspilot_cloud_baby/templates/search.html apps/inspilot_cloud_baby/tests/test_chat_search.py
@@ -546,7 +546,7 @@ git commit -m "feat: show retrieval evidence in admin search"
 - 修改：`apps/inspilot_cloud_baby/tests/test_dingtalk_admin.py`
 - 修改：`apps/inspilot_cloud_baby/tests/test_admin_pages.py`
 
-- [ ] **步骤 1：为评论可用、不可用、异常和重复场景编写失败测试**
+- [x] **步骤 1：为评论可用、不可用、异常和重复场景编写失败测试**
 
 ```python
 def test_comment_permission_error_is_not_reported_as_empty_success(client, permission_error):
@@ -566,13 +566,13 @@ def test_duplicate_comment_merges_into_operation_record() -> None:
 
 规范化测试必须覆盖首尾/连续空白、大小写折叠、中英文末尾标点和分钟级时间，同时保留原始展示文本。
 
-- [ ] **步骤 2：运行钉钉测试并确认失败**
+- [x] **步骤 2：运行钉钉测试并确认失败**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_dingtalk_admin.py tests/test_admin_pages.py -k 'comment or approval_chain' -v`
 
 预期：失败，因为客户端当前返回列表，且没有归并意见模型。
 
-- [ ] **步骤 3：实现显式获取结果和归并意见模型**
+- [x] **步骤 3：实现显式获取结果和归并意见模型**
 
 ```python
 @dataclass(frozen=True)
@@ -597,19 +597,19 @@ class ApprovalRemark:
 
 将钉钉权限错误码/消息映射为 `unavailable`，传输及非预期 API 错误映射为 `error`。`get_detail` 必须保留结果状态，不能把所有失败都转成空评论列表。
 
-- [ ] **步骤 4：实现规范化和归并优先级**
+- [x] **步骤 4：实现规范化和归并优先级**
 
 使用 `(user_id, timestamp[:16], normalized_content)` 作为跨来源降级键。优先保留操作记录的节点/类型/结果字段，再补充评论 ID 和评论原文。在 `AdminWorkflowDetail`、`WorkflowDoc` 中增加 `comment_status`、`comment_error_type` 和归并意见。
 
 更新 `_build_dingtalk_knowledge_body`：根据归并意见只渲染一个“审批意见”章节，不再分别渲染重复的审批链/评论文本；无意见的操作记录仍作为审批链事件保留。评论状态为不可用/异常时，增加明确降级说明。
 
-- [ ] **步骤 5：运行钉钉和后台测试**
+- [x] **步骤 5：运行钉钉和后台测试**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_dingtalk_admin.py tests/test_admin_pages.py -v`
 
 预期：通过。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby/src/inspilot_cloud_baby/dingtalk_admin.py apps/inspilot_cloud_baby/src/inspilot_cloud_baby/routers/admin.py apps/inspilot_cloud_baby/tests/test_dingtalk_admin.py apps/inspilot_cloud_baby/tests/test_admin_pages.py
@@ -626,7 +626,7 @@ git commit -m "feat: merge dingtalk comments with approval remarks"
 - 修改：`apps/inspilot_cloud_baby/tests/test_dingtalk_admin.py`
 - 修改：`apps/inspilot_cloud_baby/tests/test_admin_pages.py`
 
-- [ ] **步骤 1：编写失败的能力测试**
+- [x] **步骤 1：编写失败的能力测试**
 
 ```python
 def test_dingtalk_capabilities_report_independent_states(client, permission_error):
@@ -650,13 +650,13 @@ def test_dingtalk_settings_test_does_not_persist_test_instance_id(web, saved_set
     assert "PROC-1" not in saved_settings
 ```
 
-- [ ] **步骤 2：运行聚焦测试并确认失败**
+- [x] **步骤 2：运行聚焦测试并确认失败**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_dingtalk_admin.py tests/test_admin_pages.py -k capabilit -v`
 
 预期：失败，因为能力模型和界面尚不存在。
 
-- [ ] **步骤 3：实现能力测试结果**
+- [x] **步骤 3：实现能力测试结果**
 
 ```python
 @dataclass(frozen=True)
@@ -674,17 +674,17 @@ class DingTalkCapabilities:
 
 `test_capabilities(process_instance_id)` 必须先测试 token。未提供实例 ID 时，详情/评论返回 `not_tested` 并给出明确说明；提供后，详情和评论 API 独立调用，任一失败不得覆盖另一项结果。
 
-- [ ] **步骤 4：更新配置界面和端点**
+- [x] **步骤 4：更新配置界面和端点**
 
 增加标签为“测试审批实例 ID（不保存）”的 `process_instance_id` 输入，并纳入 `testDingTalk()` 的 `X-Test-Body`。在现有测试结果局部模板中以紧凑列表展示三项状态。审计只记录服务名、整体状态和能力状态码，绝不记录凭据或实例 ID。
 
-- [ ] **步骤 5：运行测试**
+- [x] **步骤 5：运行测试**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_dingtalk_admin.py tests/test_admin_pages.py -v`
 
 预期：通过。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby/src/inspilot_cloud_baby/dingtalk_admin.py apps/inspilot_cloud_baby/src/inspilot_cloud_baby/routers/admin.py apps/inspilot_cloud_baby/src/inspilot_cloud_baby/templates/settings.html apps/inspilot_cloud_baby/src/inspilot_cloud_baby/templates/partials/_settings_test.html apps/inspilot_cloud_baby/tests/test_dingtalk_admin.py apps/inspilot_cloud_baby/tests/test_admin_pages.py
@@ -699,7 +699,7 @@ git commit -m "feat: report dingtalk capability status"
 - 修改：`apps/inspilot_cloud_baby/README.md`
 - 修改：`docs/superpowers/plans/2026-06-18-beta-readiness-hardening.md`
 
-- [ ] **步骤 1：编写失败的验证器测试**
+- [x] **步骤 1：编写失败的验证器测试**
 
 ```python
 def test_verifier_stops_when_fixture_is_missing(session):
@@ -721,13 +721,13 @@ def test_verifier_reports_secret_record_ids_without_secret_values(session, confi
     assert "actual-secret" not in report.to_json()
 ```
 
-- [ ] **步骤 2：运行验证器测试并确认失败**
+- [x] **步骤 2：运行验证器测试并确认失败**
 
 运行：`cd apps/inspilot_cloud_baby && DYLD_LIBRARY_PATH=/usr/local/opt/expat/lib .venv/bin/python -m pytest tests/test_verify_beta_readiness.py -v`
 
 预期：失败，因为验证器尚不存在。
 
-- [ ] **步骤 3：实现只读验证器**
+- [x] **步骤 3：实现只读验证器**
 
 脚本必须：
 
@@ -747,7 +747,7 @@ python -m inspilot_cloud_baby.scripts.verify_beta_readiness --business-id 202605
 
 仅当所有自动门槛通过时退出码为 `0`；fixture、检索、证据或秘密检查失败时退出码为 `1`。
 
-- [ ] **步骤 4：运行全部自动验证**
+- [x] **步骤 4：运行全部自动验证**
 
 运行：
 
@@ -761,20 +761,29 @@ git diff --check
 
 预期：测试通过；Ruff 输出 `All checks passed!`；验证器以 0 退出，四个查询均有 Top 8 可解释结果且无秘密泄露；`git diff --check` 无输出。
 
-- [ ] **步骤 5：运行真实钉钉和浏览器回归**
+- [x] **步骤 5：运行真实钉钉和浏览器回归**
 
 在 `/admin/settings` 使用该业务编号对应的已知流程实例 ID，验证三项能力状态。随后在 `/admin/dws` 预览/导入，并在 `/admin/search` 执行四个查询。记录独立评论为 `ok` 还是降级；无论哪种情况，审批操作记录都必须存在。确认每条搜索来源展示渠道、命中字段和最终排名，并在 5 秒内完成。
 
-- [ ] **步骤 6：更新 README，并按实际结果勾选计划**
+- [x] **步骤 6：更新 README，并按实际结果勾选计划**
 
 记录审计操作者限制（接入 SSO 前为 `admin:web`）、检索排序规则、钉钉能力结果、验证器命令、真实工单结果和实测查询耗时。独立评论权限仍不可用时，不得标记为通过。
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```bash
 git add apps/inspilot_cloud_baby/src/inspilot_cloud_baby/scripts/verify_beta_readiness.py apps/inspilot_cloud_baby/tests/test_verify_beta_readiness.py apps/inspilot_cloud_baby/README.md docs/superpowers/plans/2026-06-18-beta-readiness-hardening.md
 git commit -m "test: verify beta readiness gates"
 ```
+
+### 任务 8 实际验收结果（2026-06-18）
+
+- 自动测试：`74 passed`；Ruff 与 `git diff --check` 通过。
+- 只读验证器：四个固定查询均在 Top 8，目标最终排名依次为 `1 / 1 / 2 / 1`；实测检索层耗时为 `2241 / 522 / 514 / 466 ms`，均低于 5 秒；未发现审计秘密泄露。
+- 钉钉能力：基础连接通过、审批详情通过；独立评论接口返回 `Invalid method`，归类为 `unavailable/api_unavailable`，不标记为能力通过。
+- 降级完整性：真实审批预览保留 29 个表单字段和 14 条操作记录；操作记录中的审批意见可用于评论降级。
+- 浏览器检索：四个查询均命中目标知识，并展示最终排名、召回渠道和命中字段；控制台无错误。完整 RAG 回答包含生产库和外部模型调用，不纳入检索层 5 秒门槛，工单号完整回答本次约一分钟。
+- 操作者限制：管理后台接入可信登录态或 SSO 前，浏览器管理动作统一记录为 `admin:web`。
 
 ## 最终复核
 

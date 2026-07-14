@@ -9,6 +9,11 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from inspilot_cloud_baby.audit import (
+    ADMIN_WEB_ACTOR,
+    config_change_metadata,
+    write_audit,
+)
 from inspilot_cloud_baby.config import settings
 from inspilot_cloud_baby.db import SessionLocal
 from inspilot_cloud_baby.dingtalk_admin import DingTalkAdminClient, WorkflowDoc
@@ -155,16 +160,34 @@ def _build_dingtalk_knowledge_body(workflow: WorkflowDoc) -> str:
     if workflow.operation_records:
         body_parts.append("\n## 审批链条")
         for rec in workflow.operation_records:
+            if workflow.remarks and str(rec.get("remark", "")).strip():
+                continue
             body_parts.append(f"- {_format_operation_record(rec)}")
 
-    if workflow.comments:
-        body_parts.append("\n## 评论")
+    if workflow.remarks:
+        body_parts.append("\n## 审批意见")
+        for remark in workflow.remarks:
+            details = [
+                remark.get("timestamp", ""),
+                remark.get("user_id", "未知"),
+                remark.get("node_name", ""),
+                remark.get("operation_result", ""),
+            ]
+            prefix = " / ".join(str(value) for value in details if value)
+            body_parts.append(f"- {prefix}: {remark.get('content', '')}")
+    elif workflow.comments:
+        body_parts.append("\n## 审批意见")
         for comment in workflow.comments:
             body_parts.append(
                 f"- **{comment.get('user_id', '未知')}**"
                 f"{' @ ' + comment.get('timestamp', '') if comment.get('timestamp') else ''}: "
                 f"{comment.get('content', '')}"
             )
+
+    if workflow.comment_status in {"unavailable", "error"}:
+        body_parts.append(
+            "\n> 独立评论接口不可用，审批意见已按审批操作记录降级导入。"
+        )
 
     if workflow.attachments:
         body_parts.append("\n## 附件")
@@ -548,6 +571,15 @@ def ingest_confirm(
             )
             session.add(item)
             _attach_embedding(item)
+            session.flush()
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="knowledge.create",
+                resource_type="knowledge_item",
+                resource_id=str(item.id),
+                metadata={"source_type": item.source_type, "status": item.status.value},
+            )
             session.commit()
             return item.id
 
@@ -575,6 +607,15 @@ def project_create(
                 summary=summary,
             )
             session.add(project)
+            session.flush()
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="project.create",
+                resource_type="project",
+                resource_id=str(project.id),
+                metadata={"name": project.name, "visibility": project.visibility.value},
+            )
             session.commit()
             return project
 
@@ -596,7 +637,16 @@ def knowledge_update_status(request: Request, item_id: str, status: str = Form(.
             item = session.get(KnowledgeItem, uuid.UUID(item_id))
             if not item:
                 return None
+            before = item.status.value
             item.status = KnowledgeStatus(status)
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="knowledge.status.update",
+                resource_type="knowledge_item",
+                resource_id=str(item.id),
+                metadata={"before": {"status": before}, "after": {"status": item.status.value}},
+            )
             session.commit()
             project_name = ""
             if item.project_id:
@@ -630,8 +680,24 @@ def knowledge_update_visibility(
             item = session.get(KnowledgeItem, uuid.UUID(item_id))
             if not item:
                 return None
+            before = {
+                "project_id": str(item.project_id) if item.project_id else None,
+                "sensitivity": item.sensitivity.value,
+            }
             item.project_id = uuid.UUID(project_id) if project_id else None
             item.sensitivity = KnowledgeSensitivity(sensitivity)
+            after = {
+                "project_id": str(item.project_id) if item.project_id else None,
+                "sensitivity": item.sensitivity.value,
+            }
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="knowledge.visibility.update",
+                resource_type="knowledge_item",
+                resource_id=str(item.id),
+                metadata={"before": before, "after": after},
+            )
             session.commit()
 
             project_name = ""
@@ -660,6 +726,20 @@ def knowledge_delete(request: Request, item_id: str):
         with SessionLocal() as session:
             item = session.get(KnowledgeItem, uuid.UUID(item_id))
             if item:
+                write_audit(
+                    session,
+                    actor_user_id=ADMIN_WEB_ACTOR,
+                    action="knowledge.delete",
+                    resource_type="knowledge_item",
+                    resource_id=str(item.id),
+                    metadata={
+                        "title": item.title,
+                        "source_type": item.source_type,
+                        "project_id": str(item.project_id) if item.project_id else None,
+                        "sensitivity": item.sensitivity.value,
+                        "status": item.status.value,
+                    },
+                )
                 session.delete(item)
                 session.commit()
 
@@ -807,7 +887,8 @@ def dws_import(
                 status=KnowledgeStatus.PENDING_REVIEW,
                 project_id=uuid.UUID(project_id) if project_id else None,
                 metadata_json={
-                    "workflow_id": workflow_id,
+                    "workflow_id": detail.process_instance_id,
+                    "business_id": detail.business_id,
                     "workflow_status": workflow.status,
                     "originator": workflow.originator,
                     "form_fields": list(workflow.form_data.keys()),
@@ -816,6 +897,18 @@ def dws_import(
             )
             session.add(item)
             _attach_embedding(item)
+            session.flush()
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="dingtalk.import",
+                resource_type="knowledge_item",
+                resource_id=str(item.id),
+                metadata={
+                    "workflow_id": detail.process_instance_id,
+                    "business_id": detail.business_id,
+                },
+            )
             session.commit()
             return item.id
 
@@ -905,41 +998,52 @@ def dws_batch_import(
 
     result = admin.batch_get_details(ids)
     imported_count = 0
-    errors: list[dict] = []
+    errors: list[dict] = list(result.failed)
 
-    for detail in result.succeeded:
-        try:
-            workflow = DingTalkAdminClient.to_workflow(detail)
-            body = _build_dingtalk_knowledge_body(workflow)
+    try:
+        with SessionLocal() as session:
+            imported_ids: list[str] = []
+            for detail in result.succeeded:
+                workflow = DingTalkAdminClient.to_workflow(detail)
+                body = _build_dingtalk_knowledge_body(workflow)
+                item = KnowledgeItem(
+                    title=f"[钉钉审批] {detail.title or detail.process_instance_id}",
+                    body=body,
+                    source_type="dingtalk_approval",
+                    sensitivity=KnowledgeSensitivity.PROJECT_RESTRICTED,
+                    status=KnowledgeStatus.PENDING_REVIEW,
+                    project_id=uuid.UUID(project_id) if project_id else None,
+                    metadata_json={
+                        "workflow_id": detail.process_instance_id,
+                        "business_id": detail.business_id,
+                        "workflow_status": detail.status,
+                        "originator": detail.originator_user_id,
+                        "form_fields": list(detail.form_data.keys()),
+                    },
+                    created_by="dingtalk_batch_import",
+                )
+                session.add(item)
+                _attach_embedding(item)
+                session.flush()
+                imported_ids.append(str(item.id))
+            imported_count = len(imported_ids)
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="dingtalk.batch_import",
+                resource_type="knowledge_batch",
+                resource_id=",".join(imported_ids),
+                metadata={
+                    "requested_count": len(ids),
+                    "success_count": imported_count,
+                    "failure_count": len(errors),
+                },
+            )
+            session.commit()
+    except Exception as exc:  # noqa: BLE001 - returned in the batch result
+        imported_count = 0
+        errors.append({"id": "database", "error": str(exc)})
 
-            def _query(pid=detail.process_instance_id, b=body, t=detail.title, st=detail.status):
-                with SessionLocal() as session:
-                    item = KnowledgeItem(
-                        title=f"[钉钉审批] {t or pid}",
-                        body=b,
-                        source_type="dingtalk_approval",
-                        sensitivity=KnowledgeSensitivity.PROJECT_RESTRICTED,
-                        status=KnowledgeStatus.PENDING_REVIEW,
-                        project_id=uuid.UUID(project_id) if project_id else None,
-                        metadata_json={
-                            "workflow_id": pid,
-                            "workflow_status": st,
-                            "originator": detail.originator_user_id,
-                            "form_fields": list(detail.form_data.keys()),
-                        },
-                        created_by="dingtalk_batch_import",
-                    )
-                    session.add(item)
-                    _attach_embedding(item)
-                    session.commit()
-                    return item.id
-
-            _db_query(_query)
-            imported_count += 1
-        except Exception as exc:
-            errors.append({"id": detail.process_instance_id, "error": str(exc)})
-
-    errors.extend(result.failed)
     return templates.TemplateResponse(
         request, "partials/_dws_batch_success.html",
         _ctx(request, imported_count=imported_count, total=len(ids), errors=errors),
@@ -981,6 +1085,27 @@ def _save_setting(session: Session, key: str, value: str) -> None:
         row.value = value
     else:
         session.add(AppSetting(key=key, value=value))
+
+
+def _settings_snapshot(session: Session) -> dict[str, str]:
+    return {
+        key: row.value
+        for key in _SETTINGS_KEYS
+        if (row := session.get(AppSetting, key)) is not None
+    }
+
+
+def _record_config_test(*, service: str, ok: bool, error_type: str = "") -> None:
+    with SessionLocal() as session:
+        write_audit(
+            session,
+            actor_user_id=ADMIN_WEB_ACTOR,
+            action="config.test",
+            resource_type="integration_config",
+            resource_id=service,
+            metadata={"service": service, "ok": ok, "error_type": error_type},
+        )
+        session.commit()
 
 
 @router.get("/settings")
@@ -1090,6 +1215,7 @@ def settings_save(
 
     def _query():
         with SessionLocal() as session:
+            before = _settings_snapshot(session)
             if dingtalk_app_key.strip():
                 _save_setting(session, "dingtalk_app_key", dingtalk_app_key.strip())
             if dingtalk_app_secret.strip():
@@ -1124,6 +1250,15 @@ def settings_save(
                 _save_setting(session, "prod_db_user", prod_db_user.strip())
             if prod_db_password.strip():
                 _save_setting(session, "prod_db_password", prod_db_password.strip())
+            after = _settings_snapshot(session)
+            write_audit(
+                session,
+                actor_user_id=ADMIN_WEB_ACTOR,
+                action="config.update",
+                resource_type="integration_config",
+                resource_id="settings",
+                metadata=config_change_metadata(before=before, after=after),
+            )
             session.commit()
 
     try:
@@ -1234,6 +1369,9 @@ def settings_test(request: Request):
     model = body.get("model", "").strip() or saved["model"]
 
     if not api_key:
+        _record_config_test(
+            service="embedding", ok=False, error_type="missing_configuration"
+        )
         return templates.TemplateResponse(
             request,
             "partials/_settings_test.html",
@@ -1244,6 +1382,7 @@ def settings_test(request: Request):
     vector = svc.embed_text("测试连接")
 
     if vector is not None:
+        _record_config_test(service="embedding", ok=True)
         dim = len(vector)
         endpoint = base_url or "https://api.openai.com/v1 (官方)"
         return templates.TemplateResponse(
@@ -1258,6 +1397,7 @@ def settings_test(request: Request):
         )
 
     endpoint = base_url or "https://api.openai.com/v1 (官方)"
+    _record_config_test(service="embedding", ok=False, error_type="connection_failed")
     return templates.TemplateResponse(
         request,
         "partials/_settings_test.html",
@@ -1288,12 +1428,14 @@ def settings_chat_test(request: Request):
     model = body.get("model", "").strip() or saved["model"]
 
     if not api_key:
+        _record_config_test(service="chat", ok=False, error_type="missing_configuration")
         return templates.TemplateResponse(
             request,
             "partials/_settings_test.html",
             _ctx(request, test_ok=False, test_message="未配置对话模型 API Key。请先填写。"),
         )
     if not model:
+        _record_config_test(service="chat", ok=False, error_type="missing_configuration")
         return templates.TemplateResponse(
             request,
             "partials/_settings_test.html",
@@ -1305,6 +1447,7 @@ def settings_chat_test(request: Request):
 
     endpoint = base_url or "https://api.openai.com/v1 (官方)"
     if reply:
+        _record_config_test(service="chat", ok=True)
         snippet = reply.strip()[:60]
         return templates.TemplateResponse(
             request,
@@ -1315,6 +1458,7 @@ def settings_chat_test(request: Request):
                 test_endpoint=endpoint,
             ),
         )
+    _record_config_test(service="chat", ok=False, error_type="connection_failed")
     return templates.TemplateResponse(
         request,
         "partials/_settings_test.html",
@@ -1339,25 +1483,54 @@ def settings_dingtalk_test(request: Request):
     saved = _get_dingtalk_config()
     app_key = body.get("app_key", "").strip() or saved["app_key"]
     app_secret = body.get("app_secret", "").strip() or saved["app_secret"]
+    process_instance_id = body.get("process_instance_id", "").strip()
 
     if not app_key or not app_secret:
+        _record_config_test(
+            service="dingtalk", ok=False, error_type="missing_configuration"
+        )
         return templates.TemplateResponse(
             request,
             "partials/_settings_test.html",
             _ctx(request, test_ok=False, test_message="未配置钉钉 AppKey 或 AppSecret。请先填写。"),
         )
 
-    ok, message = DingTalkAdminClient(app_key, app_secret).test_connection()
-    if ok:
-        return templates.TemplateResponse(
-            request,
-            "partials/_settings_test.html",
-            _ctx(request, test_ok=True, test_message="✅ 连接成功。钉钉 access_token 获取正常。"),
-        )
+    capabilities = DingTalkAdminClient(app_key, app_secret).test_capabilities(
+        process_instance_id
+    )
+    ok = capabilities.token.status == "ok" and capabilities.approval_detail.status in {
+        "ok",
+        "not_tested",
+    }
+    error_type = ""
+    if capabilities.token.status != "ok":
+        error_type = "connection_failed"
+    elif capabilities.approval_detail.status == "failed":
+        error_type = "approval_detail_failed"
+    elif capabilities.comments.status in {"failed", "unavailable"}:
+        error_type = "comments_unavailable"
+    _record_config_test(
+        service="dingtalk",
+        ok=ok,
+        error_type=error_type,
+    )
     return templates.TemplateResponse(
         request,
         "partials/_settings_test.html",
-        _ctx(request, test_ok=False, test_message=f"❌ 连接失败：{message}"),
+        _ctx(
+            request,
+            test_ok=ok,
+            test_message="钉钉开放平台能力测试完成。",
+            capability_results=[
+                ("基础连接", capabilities.token.status, capabilities.token.message),
+                (
+                    "审批详情",
+                    capabilities.approval_detail.status,
+                    capabilities.approval_detail.message,
+                ),
+                ("独立评论", capabilities.comments.status, capabilities.comments.message),
+            ],
+        ),
     )
 
 
@@ -1379,6 +1552,9 @@ def settings_db_test(request: Request):
     password = body.get("password", "").strip()
 
     if not host:
+        _record_config_test(
+            service="production_db", ok=False, error_type="missing_configuration"
+        )
         return templates.TemplateResponse(
             request,
             "partials/_settings_test.html",
@@ -1387,6 +1563,11 @@ def settings_db_test(request: Request):
 
     svc = ProdDBService(host=host, port=int(port), database=database, user=user, password=password)
     ok, msg = svc.test_connection()
+    _record_config_test(
+        service="production_db",
+        ok=ok,
+        error_type="" if ok else "connection_failed",
+    )
     return templates.TemplateResponse(
         request,
         "partials/_settings_test.html",

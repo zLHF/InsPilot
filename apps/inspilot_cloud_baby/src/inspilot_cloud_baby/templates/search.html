@@ -24,6 +24,8 @@
   .chat-sources summary { cursor:pointer; color:#64748b; user-select:none; }
   .chat-sources a { color:#3b82f6; text-decoration:none; }
   .chat-sources a:hover { text-decoration:underline; }
+  .chat-source-evidence { margin:0 0 5px 14px; color:#64748b; line-height:1.4; }
+  .chat-source-evidence { margin:0 0 5px 14px; color:#64748b; line-height:1.4; }
   .chat-quick { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
   .chat-quick button { font-size:12px; padding:6px 12px; border-radius:16px; border:1px solid #cbd5e1; background:#fff; color:#475569; cursor:pointer; }
   .chat-quick button:hover { border-color:#3b82f6; color:#3b82f6; }
@@ -134,6 +136,16 @@ async function doSend() {
       const tags = [s.region, s.insurer].filter(x=>x).join(' | ');
       a.textContent = (tags ? '[' + tags + '] ' : '') + s.title;
       list.appendChild(a);
+      const evidence = document.createElement('div');
+      evidence.className = 'chat-source-evidence';
+      const channel = (s.recall_channels || []).join(' + ') || '降级召回';
+      const fields = (s.matched_fields || []).join('、') || '语义匹配';
+      const ranks = [
+        s.keyword_rank ? `关键词 #${s.keyword_rank}` : '',
+        s.vector_rank ? `向量 #${s.vector_rank}` : ''
+      ].filter(Boolean).join('，');
+      evidence.textContent = `最终 #${s.final_rank} · ${channel} · ${fields}${ranks ? ' · ' + ranks : ''}`;
+      list.appendChild(evidence);
     });
     det.appendChild(list);
     srcWrap.appendChild(det);

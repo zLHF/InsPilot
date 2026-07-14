@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from inspilot_cloud_baby.models import KnowledgeSensitivity
-from inspilot_cloud_baby.retrieval import KnowledgeDocument, _query_terms, _rrf_fuse
+from inspilot_cloud_baby.retrieval import KnowledgeDocument, _query_terms
+from inspilot_cloud_baby.retrieval_evidence import RetrievalCandidate, fuse_candidates
 from inspilot_cloud_baby.routers.chat import _needs_prod_db
 
 
@@ -17,29 +18,54 @@ def _doc(doc_id: str) -> KnowledgeDocument:
     )
 
 
-# --- RRF fusion ------------------------------------------------------------
+def _candidate(
+    doc_id: str, *, keyword_rank=None, keyword_score=0, vector_rank=None, vector_distance=None
+) -> RetrievalCandidate:
+    return RetrievalCandidate(
+        document=_doc(doc_id),
+        keyword_rank=keyword_rank,
+        keyword_score=keyword_score,
+        vector_rank=vector_rank,
+        vector_distance=vector_distance,
+    )
 
 
-def test_rrf_fuse_rewards_cross_channel_agreement():
-    # doc "2" ranks high in both lists → should win after fusion.
-    vector = [_doc("1"), _doc("2"), _doc("3")]
-    keyword = [_doc("2"), _doc("4"), _doc("1")]
-    fused = _rrf_fuse([vector, keyword])
-    assert fused[0].id == "2"
-    assert {d.id for d in fused} == {"1", "2", "3", "4"}
+# --- evidence-carrying fusion (RRF's successor) -----------------------------
 
 
-def test_rrf_fuse_dedups_by_id():
-    a = [_doc("1"), _doc("2")]
-    b = [_doc("1"), _doc("2")]
-    fused = _rrf_fuse([a, b])
-    assert [d.id for d in fused] == ["1", "2"]
+def test_fuse_candidates_rewards_cross_channel_agreement():
+    # doc "2" ranks high in both channels → should win after fusion.
+    keyword = [
+        _candidate("2", keyword_rank=1, keyword_score=1),
+        _candidate("4", keyword_rank=2, keyword_score=1),
+    ]
+    vector = [
+        _candidate("2", vector_rank=1),
+        _candidate("1", vector_rank=2),
+    ]
+    fused = fuse_candidates(keyword=keyword, vector=vector, limit=10)
+    assert fused[0].document.id == "2"
+    assert fused[0].evidence.channels == ("keyword", "vector")
+    assert {item.document.id for item in fused} == {"1", "2", "4"}
 
 
-def test_rrf_fuse_handles_empty_lists():
-    assert _rrf_fuse([[], []]) == []
-    single = _rrf_fuse([[_doc("9")], []])
-    assert [d.id for d in single] == ["9"]
+def test_fuse_candidates_dedups_by_id():
+    keyword = [
+        _candidate("1", keyword_rank=1, keyword_score=1),
+        _candidate("2", keyword_rank=2, keyword_score=1),
+    ]
+    vector = [
+        _candidate("1", vector_rank=1),
+        _candidate("2", vector_rank=2),
+    ]
+    fused = fuse_candidates(keyword=keyword, vector=vector, limit=10)
+    assert [item.document.id for item in fused] == ["1", "2"]
+
+
+def test_fuse_candidates_handles_empty_lists():
+    assert fuse_candidates(keyword=[], vector=[], limit=10) == []
+    single = fuse_candidates(keyword=[], vector=[_candidate("9", vector_rank=1)], limit=10)
+    assert [item.document.id for item in single] == ["9"]
 
 
 # --- jieba query tokenization ---------------------------------------------

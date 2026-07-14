@@ -4,8 +4,20 @@ from fastapi.testclient import TestClient
 
 from inspilot_cloud_baby.config import settings
 from inspilot_cloud_baby.main import create_app
-from inspilot_cloud_baby.dingtalk_admin import WorkflowDoc
-from inspilot_cloud_baby.models import AppSetting, KnowledgeItem, KnowledgeSensitivity, KnowledgeStatus
+from inspilot_cloud_baby.dingtalk_admin import (
+    AdminWorkflowDetail,
+    CapabilityStatus,
+    DingTalkCapabilities,
+    WorkflowDoc,
+)
+from inspilot_cloud_baby.models import (
+    AppSetting,
+    AuditLog,
+    KnowledgeItem,
+    KnowledgeSensitivity,
+    KnowledgeStatus,
+    Project,
+)
 from inspilot_cloud_baby.routers import admin
 
 
@@ -38,10 +50,12 @@ def test_settings_page_renders_dingtalk_credentials_form() -> None:
     assert 'name="dingtalk_app_secret"' in response.text
     assert "testDingTalk()" in response.text
     assert 'id="test-dingtalk"' in response.text
+    assert 'id="dingtalk_test_process_instance_id"' in response.text
 
 
 def test_settings_save_persists_dingtalk_credentials(monkeypatch) -> None:
     saved: dict[str, AppSetting] = {}
+    audits: list[AuditLog] = []
 
     class FakeSession:
         def __init__(self):
@@ -57,7 +71,10 @@ def test_settings_save_persists_dingtalk_credentials(monkeypatch) -> None:
             return saved.get(key)
 
         def add(self, row):
-            saved[row.key] = row
+            if isinstance(row, AppSetting):
+                saved[row.key] = row
+            else:
+                audits.append(row)
 
         def commit(self):
             return None
@@ -77,6 +94,13 @@ def test_settings_save_persists_dingtalk_credentials(monkeypatch) -> None:
     assert response.status_code == 303
     assert saved["dingtalk_app_key"].value == "ding-key"
     assert saved["dingtalk_app_secret"].value == "ding-secret"
+    assert len(audits) == 1
+    assert audits[0].action == "config.update"
+    assert audits[0].metadata_json == {
+        "changed_keys": ["dingtalk_app_key", "dingtalk_app_secret", "enable_vector_search"],
+        "secret_keys_changed": ["dingtalk_app_secret"],
+    }
+    assert "ding-secret" not in repr(audits[0].metadata_json)
 
 
 def test_dingtalk_admin_client_uses_db_credentials_when_env_empty(monkeypatch) -> None:
@@ -100,29 +124,69 @@ def test_dingtalk_admin_client_uses_db_credentials_when_env_empty(monkeypatch) -
 
 def test_dingtalk_settings_test_uses_current_form_values(monkeypatch) -> None:
     seen: dict[str, str] = {}
+    audits: list[AuditLog] = []
 
     class FakeDingTalkClient:
         def __init__(self, app_key: str, app_secret: str) -> None:
             seen["app_key"] = app_key
             seen["app_secret"] = app_secret
 
-        def test_connection(self) -> tuple[bool, str]:
-            return True, ""
+        def test_capabilities(self, process_instance_id: str) -> DingTalkCapabilities:
+            seen["process_instance_id"] = process_instance_id
+            return DingTalkCapabilities(
+                token=CapabilityStatus(status="ok"),
+                approval_detail=CapabilityStatus(status="ok"),
+                comments=CapabilityStatus(status="unavailable", message="无接口访问权限"),
+            )
 
     monkeypatch.setattr(admin, "DingTalkAdminClient", FakeDingTalkClient)
+    monkeypatch.setattr(admin, "_get_dingtalk_config", lambda: {"app_key": "", "app_secret": ""})
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def add(self, row):
+            audits.append(row)
+
+        def commit(self):
+            return None
+
+    monkeypatch.setattr(admin, "SessionLocal", lambda: FakeSession())
     client = TestClient(create_app())
 
     response = client.post(
         "/admin/settings/dingtalk-test",
         headers={
-            "X-Test-Body": '{"app_key":"form-key","app_secret":"form-secret"}',
+            "X-Test-Body": (
+                '{"app_key":"form-key","app_secret":"form-secret",'
+                '"process_instance_id":"PROC-1"}'
+            ),
         },
         json={},
     )
 
     assert response.status_code == 200
-    assert "连接成功" in response.text
-    assert seen == {"app_key": "form-key", "app_secret": "form-secret"}
+    assert "钉钉能力测试结果" in response.text
+    assert seen == {
+        "app_key": "form-key",
+        "app_secret": "form-secret",
+        "process_instance_id": "PROC-1",
+    }
+    assert "基础连接" in response.text
+    assert "审批详情" in response.text
+    assert "独立评论" in response.text
+    assert len(audits) == 1
+    assert audits[0].action == "config.test"
+    assert audits[0].metadata_json == {
+        "service": "dingtalk",
+        "ok": True,
+        "error_type": "comments_unavailable",
+    }
+    assert "form-secret" not in repr(audits[0].metadata_json)
 
 
 def test_dingtalk_settings_test_requires_credentials(monkeypatch) -> None:
@@ -204,6 +268,8 @@ def test_knowledge_visibility_update_can_make_unassigned_dingtalk_item_public(mo
         def all(self):
             return []
 
+    added: list[object] = []
+
     class FakeSession:
         def __enter__(self):
             return self
@@ -218,6 +284,9 @@ def test_knowledge_visibility_update_can_make_unassigned_dingtalk_item_public(mo
 
         def scalars(self, statement):
             return FakeScalarResult()
+
+        def add(self, row):
+            added.append(row)
 
         def commit(self):
             return None
@@ -234,6 +303,98 @@ def test_knowledge_visibility_update_can_make_unassigned_dingtalk_item_public(mo
     assert item.project_id is None
     assert item.sensitivity == KnowledgeSensitivity.PUBLIC_SUMMARY
     assert "公开摘要" in response.text
+    audit = next(row for row in added if isinstance(row, AuditLog))
+    assert audit.actor_user_id == "admin:web"
+    assert audit.action == "knowledge.visibility.update"
+    assert audit.resource_id == str(item.id)
+    assert audit.metadata_json["before"]["sensitivity"] == "project_restricted"
+    assert audit.metadata_json["after"]["sensitivity"] == "public_summary"
+
+
+def test_project_create_adds_audit_in_same_session(monkeypatch) -> None:
+    added: list[object] = []
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def add(self, row):
+            added.append(row)
+
+        def flush(self):
+            project = next(row for row in added if isinstance(row, Project))
+            project.id = project.id or uuid.uuid4()
+
+        def commit(self):
+            return None
+
+    monkeypatch.setattr(admin, "SessionLocal", lambda: FakeSession())
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/admin/projects/create",
+        data={"name": "审计测试项目", "visibility": "restricted", "summary": "测试"},
+    )
+
+    assert response.status_code == 200
+    audit = next(row for row in added if isinstance(row, AuditLog))
+    assert audit.action == "project.create"
+    assert audit.actor_user_id == "admin:web"
+    assert audit.metadata_json == {"name": "审计测试项目", "visibility": "restricted"}
+
+
+def test_dingtalk_import_keeps_business_and_process_ids_separate(monkeypatch) -> None:
+    added: list[object] = []
+    detail = AdminWorkflowDetail(
+        process_instance_id="PROC-001",
+        business_id="202605281923000432811",
+        title="项目评估申请",
+        status="COMPLETED",
+        originator_user_id="user-1",
+    )
+
+    class FakeAdmin:
+        def get_detail(self, process_instance_id: str):
+            assert process_instance_id == "PROC-001"
+            return detail
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def add(self, row):
+            added.append(row)
+
+        def flush(self):
+            item = next(row for row in added if isinstance(row, KnowledgeItem))
+            item.id = item.id or uuid.uuid4()
+
+        def commit(self):
+            return None
+
+    monkeypatch.setattr(admin, "_admin_client", lambda: FakeAdmin())
+    monkeypatch.setattr(admin, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(admin, "_attach_embedding", lambda item: None)
+    client = TestClient(create_app())
+
+    response = client.post("/admin/dws/import", data={"workflow_id": "PROC-001"})
+
+    assert response.status_code == 200
+    item = next(row for row in added if isinstance(row, KnowledgeItem))
+    assert item.metadata_json["workflow_id"] == "PROC-001"
+    assert item.metadata_json["business_id"] == "202605281923000432811"
+    audit = next(row for row in added if isinstance(row, AuditLog))
+    assert audit.action == "dingtalk.import"
+    assert audit.metadata_json == {
+        "workflow_id": "PROC-001",
+        "business_id": "202605281923000432811",
+    }
 
 
 def test_dingtalk_knowledge_body_includes_approval_chain_details() -> None:

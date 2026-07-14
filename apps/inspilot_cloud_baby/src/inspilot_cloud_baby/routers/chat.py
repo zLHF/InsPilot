@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from inspilot_cloud_baby.auth import CurrentUser
@@ -17,7 +17,7 @@ from inspilot_cloud_baby.chat_service import get_chat_service
 from inspilot_cloud_baby.config import settings
 from inspilot_cloud_baby.db import SessionLocal
 from inspilot_cloud_baby.models import QueryLog
-from inspilot_cloud_baby.retrieval import retrieve_documents
+from inspilot_cloud_baby.retrieval import retrieve_documents_explained
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,11 @@ class SourceItem(BaseModel):
     insurer: str = ""
     integrator: str = ""
     doc_date: str = ""
+    recall_channels: list[str] = Field(default_factory=list)
+    matched_fields: list[str] = Field(default_factory=list)
+    keyword_rank: int | None = None
+    vector_rank: int | None = None
+    final_rank: int
 
 
 class ChatQueryResponse(BaseModel):
@@ -79,7 +84,7 @@ def _fetch_doc_kb(query: str, filters: dict | None) -> tuple[list, str]:
     """Channel 1: retrieve relevant scheme documents via vector search."""
     db: Session = SessionLocal()
     try:
-        results = retrieve_documents(
+        results = retrieve_documents_explained(
             query=query, user=_DEFAULT_USER, documents=[], limit=8, db=db, filters=filters,
         )
     finally:
@@ -87,7 +92,8 @@ def _fetch_doc_kb(query: str, filters: dict | None) -> tuple[list, str]:
     if not results:
         return [], ""
     parts = []
-    for i, doc in enumerate(results, 1):
+    for i, explained in enumerate(results, 1):
+        doc = explained.document
         body = doc.body[:_CONTEXT_MAX_CHARS]
         m = doc.metadata
         meta_bits = [f"{lab}={m.get(k)}" for lab, k in (("地区", "region"), ("保司", "insurer"), ("集成商", "integrator")) if m.get(k)]
@@ -216,11 +222,20 @@ def _parse_manual_filters(request: ChatQueryRequest) -> dict | None:
 def _build_sources(doc_results: list) -> list[SourceItem]:
     return [
         SourceItem(
-            id=doc.id, title=doc.title, source_type=doc.source_type,
-            region=doc.metadata.get("region", ""), insurer=doc.metadata.get("insurer", ""),
-            integrator=doc.metadata.get("integrator", ""), doc_date=doc.metadata.get("doc_date", ""),
+            id=item.document.id,
+            title=item.document.title,
+            source_type=item.document.source_type,
+            region=item.document.metadata.get("region", ""),
+            insurer=item.document.metadata.get("insurer", ""),
+            integrator=item.document.metadata.get("integrator", ""),
+            doc_date=item.document.metadata.get("doc_date", ""),
+            recall_channels=list(item.evidence.channels),
+            matched_fields=list(item.evidence.matched_fields),
+            keyword_rank=item.evidence.keyword_rank,
+            vector_rank=item.evidence.vector_rank,
+            final_rank=item.evidence.final_rank,
         )
-        for doc in doc_results
+        for item in doc_results
     ]
 
 
@@ -273,7 +288,7 @@ def _log_query(query, user_id, doc_results, prod_rows, llm_used, latency_ms) -> 
             db.add(QueryLog(
                 query=query[:2000],
                 user_id=user_id,
-                doc_ids=[d.id for d in doc_results],
+                doc_ids=[d.document.id for d in doc_results],
                 doc_count=len(doc_results),
                 prod_rows=prod_rows,
                 llm_used=llm_used,

@@ -113,6 +113,12 @@
       </div>
     </div>
 
+    <div class="form-group">
+      <label for="dingtalk_test_process_instance_id">测试审批实例 ID（不保存）</label>
+      <input type="text" id="dingtalk_test_process_instance_id"
+             placeholder="用于验证审批详情与独立评论权限" autocomplete="off">
+    </div>
+
     <button type="button" class="btn btn-outline btn-sm" onclick="testDingTalk()">
       🧪 测试此配置
     </button>
@@ -312,13 +318,14 @@ async function testDB(){
 async function testDingTalk(){
   const appKey = document.getElementById('dingtalk_app_key').value.trim();
   const appSecret = document.getElementById('dingtalk_app_secret').value.trim();
+  const processInstanceId = document.getElementById('dingtalk_test_process_instance_id').value.trim();
   const area = document.getElementById('test-dingtalk');
 
   area.innerHTML = '<span class="text-sm text-muted">⏳ 测试中…</span>';
   try{
     const res = await fetch('/admin/settings/dingtalk-test', {
       method:'POST',
-      headers:{'Content-Type':'application/json', 'X-Test-Body': JSON.stringify({app_key:appKey, app_secret:appSecret})},
+      headers:{'Content-Type':'application/json', 'X-Test-Body': JSON.stringify({app_key:appKey, app_secret:appSecret, process_instance_id:processInstanceId})},
       body:'{}'
     });
     area.innerHTML = await res.text();
